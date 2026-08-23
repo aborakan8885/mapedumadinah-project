@@ -1,0 +1,65 @@
+import fs from 'fs';
+
+const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <rect width="100%" height="100%" fill="#ffffff" rx="20"/>
+  <g transform="translate(200, 140)" text-anchor="middle">
+    <!-- 24-Dot Matrix Symbol of Ministry of Education -->
+    <g fill="#00A887">
+      <!-- Left wing top cluster -->
+      <circle cx="-110" cy="-60" r="9.5" />
+      <circle cx="-110" cy="-34" r="9.5" />
+      <circle cx="-110" cy="-8" r="9.5" />
+
+      <circle cx="-82" cy="-52" r="9" />
+      <circle cx="-82" cy="-28" r="9" />
+      <circle cx="-82" cy="-4" r="9" />
+
+      <circle cx="-55" cy="-42" r="8" />
+      <circle cx="-55" cy="-20" r="8" />
+
+      <circle cx="-30" cy="-32" r="7" />
+
+      <!-- Center low point -->
+      <circle cx="0" cy="-20" r="6" />
+
+      <!-- Right wing top cluster -->
+      <circle cx="30" cy="-32" r="7" />
+
+      <circle cx="55" cy="-42" r="8" />
+      <circle cx="55" cy="-20" r="8" />
+
+      <circle cx="82" cy="-52" r="9" />
+      <circle cx="82" cy="-28" r="9" />
+      <circle cx="82" cy="-4" r="9" />
+
+      <circle cx="110" cy="-60" r="9.5" />
+      <circle cx="110" cy="-34" r="9.5" />
+      <circle cx="110" cy="-8" r="9.5" />
+
+      <!-- Lower curved dots line -->
+      <circle cx="-95" cy="18" r="7.5" />
+      <circle cx="-68" cy="24" r="7" />
+      <circle cx="-42" cy="28" r="6.5" />
+      <circle cx="-18" cy="30" r="6" />
+      <circle cx="18" cy="30" r="6" />
+      <circle cx="42" cy="28" r="6.5" />
+      <circle cx="68" cy="24" r="7" />
+      <circle cx="95" cy="18" r="7.5" />
+      <circle cx="0" cy="38" r="5" />
+    </g>
+
+    <!-- Arabic Text: وزارة التعليم -->
+    <text y="115" font-family="'Tajawal', 'Cairo', 'Almarai', Arial, sans-serif" font-weight="900" font-size="44" fill="#00A887" letter-spacing="0">وزارة التـعـلـيـم</text>
+
+    <!-- English Text: Ministry of Education -->
+    <text y="155" font-family="'Tajawal', 'Inter', Arial, sans-serif" font-weight="600" font-size="22" fill="#8D98A0" letter-spacing="0.5">Ministry of Education</text>
+  </g>
+</svg>`;
+
+if (!fs.existsSync('public')) {
+  fs.mkdirSync('public');
+}
+
+fs.writeFileSync('public/moe-logo.svg', logoSvg);
+fs.writeFileSync('public/moe-logo-horizontal.svg', logoSvg);
+console.log('Updated logo files successfully');

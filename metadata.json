@@ -1,0 +1,8 @@
+{
+  "name": "Remix .الخارطة التعليمية للقبول",
+  "description": "خارطة تفاعلية لعرض وتصفية مواقع الاستثمار والاحتياج التعليمي بمنطقة المدينة المنورة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

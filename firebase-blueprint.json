@@ -1,0 +1,26 @@
+{
+  "collections": {
+    "users": {
+      "documents": {
+        "admin-main": {
+          "civilId": "1068575628",
+          "email": "aborakan8885@gmail.com",
+          "role": "admin",
+          "name": "مدير النظام الرئيسي",
+          "status": "active"
+        }
+      }
+    },
+    "files": {
+      "documents": {}
+    },
+    "app_config": {
+      "documents": {
+        "settings": {
+          "allow_registration": true,
+          "maintenance_mode": false
+        }
+      }
+    }
+  }
+}

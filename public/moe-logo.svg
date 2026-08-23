@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 220" width="520" height="220">
+  <!-- Official Saudi Ministry of Education Logo (Exact Vector Recreation) -->
+  <g transform="translate(260, 48)">
+    <!-- 24-Dot Matrix Symbol -->
+    <g fill="#00A887">
+      <!-- Left Wing -->
+      <circle cx="-135" cy="-28" r="9.5" />
+      <circle cx="-105" cy="-20" r="9" />
+      <circle cx="-76" cy="-10" r="8.5" />
+      
+      <circle cx="-135" cy="-6" r="9.5" />
+      <circle cx="-105" cy="2" r="9" />
+      <circle cx="-76" cy="11" r="8.5" />
+
+      <circle cx="-135" cy="16" r="9" />
+      <circle cx="-105" cy="23" r="8.5" />
+      <circle cx="-76" cy="30" r="8" />
+
+      <!-- Left inner curve -->
+      <circle cx="-48" cy="1" r="7.5" />
+      <circle cx="-22" cy="14" r="6.5" />
+      <circle cx="-42" cy="33" r="6" />
+      <circle cx="-65" cy="45" r="5.5" />
+      <circle cx="-88" cy="53" r="5" />
+      <circle cx="-110" cy="57" r="4.5" />
+
+      <!-- Right Wing -->
+      <circle cx="135" cy="-28" r="9.5" />
+      <circle cx="105" cy="-20" r="9" />
+      <circle cx="76" cy="-10" r="8.5" />
+      
+      <circle cx="135" cy="-6" r="9.5" />
+      <circle cx="105" cy="2" r="9" />
+      <circle cx="76" cy="11" r="8.5" />
+
+      <circle cx="135" cy="16" r="9" />
+      <circle cx="105" cy="23" r="8.5" />
+      <circle cx="76" cy="30" r="8" />
+
+      <!-- Right inner curve -->
+      <circle cx="48" cy="1" r="7.5" />
+      <circle cx="22" cy="14" r="6.5" />
+      <circle cx="42" cy="33" r="6" />
+      <circle cx="65" cy="45" r="5.5" />
+      <circle cx="88" cy="53" r="5" />
+      <circle cx="110" cy="57" r="4.5" />
+    </g>
+  </g>
+
+  <!-- Arabic Text: وزارة التعليم -->
+  <text x="260" y="152" font-family="Tajawal, Cairo, Almarai, sans-serif" font-weight="900" font-size="42" fill="#00A887" text-anchor="middle" letter-spacing="0.5">وزارة التـعـلـيـم</text>
+
+  <!-- English Text: Ministry of Education -->
+  <text x="260" y="194" font-family="Tajawal, Inter, sans-serif" font-weight="600" font-size="22" fill="#71777D" text-anchor="middle" letter-spacing="1">Ministry of Education</text>
+</svg>

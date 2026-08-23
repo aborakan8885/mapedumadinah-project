@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if the user is an admin
+    function isAdmin() {
+      return request.auth != null && 
+             request.auth.token.email == 'aborakan8885@gmail.com';
+    }
+
+    // Global Admin Access
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    // Map data - Temporary allow public write for Frontend-Only bypass
+    match /files/{fileId} {
+      allow read: if true;
+      allow write: if true;
+      
+      match /rows/{rowId} {
+        allow read: if true;
+        allow write: if true;
+      }
+    }
+
+    // Feedback/Contact messages
+    match /feedbacks/{feedbackId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // User metadata (Private)
+    match /users/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Application Configuration
+    match /app_config/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

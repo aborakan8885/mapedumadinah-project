@@ -1,0 +1,152 @@
+/**
+ * ==============================================================================
+ * Global Design System Stylesheet (global.css)
+ * الخارطة التعليمية للقبول - نظام التصميم المتجاوب والمستدام
+ * ==============================================================================
+ */
+
+@import './design-tokens.css';
+
+/* ==============================================================================
+ * Utility Classes for Responsive Grid, Tables & Components
+ * ============================================================================== */
+
+/* شبكة بطاقات متجاوبة تلقائية الانسياب */
+.ds-grid-auto-fit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--spacing-md);
+  width: 100%;
+}
+
+.ds-grid-auto-fit-sm {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: var(--spacing-sm);
+  width: 100%;
+}
+
+.ds-grid-auto-fill {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: var(--spacing-md);
+  width: 100%;
+}
+
+/* حاوية الجداول المعقدة المرنة مع دعم التمرير الأفقي اللمسي */
+.ds-table-container {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-subtle);
+  background-color: var(--color-surface-white);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.ds-table-container table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: right;
+  font-size: var(--font-size-sm);
+}
+
+.ds-table-container th {
+  background-color: var(--color-surface-subtle);
+  color: var(--color-text-secondary);
+  font-weight: 700;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-border-medium);
+  white-space: nowrap;
+}
+
+.ds-table-container td {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.ds-table-container tr:last-child td {
+  border-bottom: none;
+}
+
+.ds-table-container tr:hover td {
+  background-color: var(--color-surface-subtle);
+}
+
+/* بطاقات الواجهة المتجاوبة */
+.ds-card {
+  background-color: var(--color-surface-white);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-md);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-base);
+  max-width: 100%;
+}
+
+.ds-card-interactive {
+  cursor: pointer;
+}
+
+.ds-card-interactive:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-border-medium);
+  transform: translateY(-1px);
+}
+
+/* الحقول والنماذج المرنة */
+.ds-input {
+  width: 100%;
+  max-width: 100%;
+  min-height: var(--touch-target-compact);
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-white);
+  border: 1.5px solid var(--color-border-medium);
+  border-radius: var(--radius-lg);
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ds-input:focus {
+  border-color: var(--color-primary-light);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
+}
+
+/* أزرار قابلة للمس بمرونة */
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  min-height: var(--touch-target-compact);
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  border-radius: var(--radius-lg);
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-decoration: none;
+  user-select: none;
+}
+
+.ds-btn-primary {
+  background-color: var(--color-primary-light);
+  color: var(--color-text-primary);
+}
+
+.ds-btn-primary:hover {
+  background-color: var(--color-primary-hover);
+}
+
+.ds-btn-primary:active {
+  transform: scale(0.98);
+}

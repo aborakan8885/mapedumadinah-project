@@ -1,0 +1,209 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+    <title>الخارطة التعليمية للقبول - المدينة المنورة</title>
+    
+    <!-- Design System Global Tokens & CSS Variables -->
+    <link rel="stylesheet" href="/src/styles/design-tokens.css" />
+    <link rel="stylesheet" href="/src/styles/global.css" />
+
+    <!-- Tailwind CSS (via Play CDN) with Sustainable Design System Theme -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+          theme: {
+            screens: {
+              'xs': '360px',
+              'sm': '576px',
+              'md': '768px',
+              'lg': '1025px',
+              'xl': '1200px',
+              '2xl': '1400px',
+            },
+            extend: {
+              fontFamily: {
+                sans: ['Tajawal', 'system-ui', '-apple-system', 'sans-serif'],
+              },
+              colors: {
+                'primary-dark': 'var(--color-primary-dark)',
+                'primary-medium': 'var(--color-primary-medium)',
+                'primary-light': 'var(--color-primary-light)',
+                'primary-subtle': 'var(--color-primary-subtle)',
+                'primary-hover': 'var(--color-primary-hover)',
+                'secondary': 'var(--color-secondary)',
+                'accent-amber': 'var(--color-accent-amber)',
+                'accent-emerald': 'var(--color-accent-emerald)',
+                'background': 'var(--color-bg-app)',
+                'surface': 'var(--color-surface-white)',
+                'card': 'var(--color-surface-white)',
+                'border': 'var(--color-border-subtle)',
+              },
+              fontSize: {
+                'fluid-2xs': 'var(--font-size-2xs)',
+                'fluid-xs': 'var(--font-size-xs)',
+                'fluid-sm': 'var(--font-size-sm)',
+                'fluid-base': 'var(--font-size-base)',
+                'fluid-md': 'var(--font-size-md)',
+                'fluid-lg': 'var(--font-size-lg)',
+                'fluid-xl': 'var(--font-size-xl)',
+                'fluid-2xl': 'var(--font-size-2xl)',
+                'fluid-3xl': 'var(--font-size-3xl)',
+              },
+              spacing: {
+                'touch': 'var(--touch-target-min)',
+                'touch-compact': 'var(--touch-target-compact)',
+              },
+              borderRadius: {
+                'xs': 'var(--radius-xs)',
+                'sm': 'var(--radius-sm)',
+                'md': 'var(--radius-md)',
+                'lg': 'var(--radius-lg)',
+                'xl': 'var(--radius-xl)',
+                '2xl': 'var(--radius-2xl)',
+              },
+              boxShadow: {
+                'glow': 'var(--shadow-glow-emerald)',
+              }
+            }
+          }
+        }
+    </script>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Tajawal', sans-serif;
+            overscroll-behavior: none;
+            overflow: hidden;
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* Leaflet Popup Styles Override */
+        .leaflet-popup-content-wrapper {
+            padding: 0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255,255,255,0.8);
+            background: rgba(255,255,255,0.98);
+            backdrop-filter: blur(8px);
+        }
+        .leaflet-popup-content {
+            margin: 12px;
+            width: auto !important;
+        }
+        .leaflet-popup-tip {
+            background: white;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+        .map-marker-icon {
+            filter: drop-shadow(0 4px 6px rgba(0,0,0,0.2));
+        }
+        
+        /* Marker Cluster Custom Aesthetic Styling (Green / Yellow / Orange Clusters) */
+        .marker-cluster-small {
+            background-color: rgba(162, 222, 116, 0.6) !important;
+            border-radius: 50% !important;
+        }
+        .marker-cluster-small div {
+            background-color: rgba(110, 204, 57, 0.85) !important;
+            color: #0f172a !important;
+            font-weight: 800 !important;
+            border-radius: 50% !important;
+            text-align: center !important;
+            font-family: 'Tajawal', sans-serif !important;
+        }
+        .marker-cluster-medium {
+            background-color: rgba(246, 219, 107, 0.6) !important;
+            border-radius: 50% !important;
+        }
+        .marker-cluster-medium div {
+            background-color: rgba(240, 194, 12, 0.85) !important;
+            color: #0f172a !important;
+            font-weight: 800 !important;
+            border-radius: 50% !important;
+            text-align: center !important;
+            font-family: 'Tajawal', sans-serif !important;
+        }
+        .marker-cluster-large {
+            background-color: rgba(253, 156, 115, 0.6) !important;
+            border-radius: 50% !important;
+        }
+        .marker-cluster-large div {
+            background-color: rgba(241, 128, 23, 0.85) !important;
+            color: #ffffff !important;
+            font-weight: 800 !important;
+            border-radius: 50% !important;
+            text-align: center !important;
+            font-family: 'Tajawal', sans-serif !important;
+        }
+        .marker-cluster {
+            background-clip: padding-box;
+            border-radius: 50% !important;
+        }
+        .marker-cluster div {
+            width: 30px;
+            height: 30px;
+            margin-left: 5px;
+            margin-top: 5px;
+            text-align: center;
+            border-radius: 50% !important;
+            font-size: 13px !important;
+            line-height: 30px !important;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .marker-cluster span {
+            line-height: 30px !important;
+            font-weight: 800 !important;
+        }
+
+        /* Marker Animation */
+        @keyframes pulse-marker {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+        .selected-marker-active {
+            animation: pulse-marker 0.6s ease-in-out infinite;
+            z-index: 1000 !important;
+        }
+    </style>
+
+    <!-- Import Map -->
+    
+    <!-- Global Libraries -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/togeojson/0.16.0/togeojson.min.js"></script>
+    
+    <!-- Report Exporting Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://unpkg.com/docx@7.3.0/build/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+</head>
+<body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>
