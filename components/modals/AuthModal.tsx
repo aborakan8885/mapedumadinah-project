@@ -40,6 +40,25 @@ export const INITIAL_DEFAULT_USERS: User[] = [
     createdAt: new Date().toISOString()
   },
   {
+    id: 'emp-1057893156',
+    civilId: '1057893156',
+    name: 'ريان عبداللطيف بشناق',
+    password: '',
+    role: 'user',
+    userType: 'employee',
+    workEntity: 'مكتب التعليم',
+    jobTitle: 'محلل نظم جغرافية',
+    status: 'active',
+    phone: '',
+    permissions: {
+      visibleLayers: ['schools', 'kmz'],
+      canViewCoordinates: true,
+      canExportReports: true,
+      canUseSurroundingAnalysis: true
+    },
+    createdAt: new Date().toISOString()
+  },
+  {
     id: 'emp-1087654321',
     civilId: '1087654321',
     name: 'سعود بن فهد العتيبي',
@@ -66,6 +85,12 @@ export const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: 
     workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
     jobTitle: 'مسؤول النظام الرئيسي',
     phone: '05xxxxxxxx'
+  },
+  '1057893156': {
+    name: 'ريان عبداللطيف بشناق',
+    workEntity: 'مكتب التعليم',
+    jobTitle: 'محلل نظم جغرافية',
+    phone: ''
   },
   '1098765432': {
     name: 'عبدالرحمن بن محمد الغامدي',
@@ -223,8 +248,9 @@ export async function syncUsersWithCloud(): Promise<User[]> {
 /**
  * Finds an approved employee by Civil ID across:
  * 1. Live Supabase Cloud Database ('users' table)
- * 2. Full Cloud + Local Synced List
- * 3. Built-in Approved Civil ID Registry
+ * 2. Local Cache & Initial Pre-configured Users
+ * 3. Built-in Approved Civil ID Registry (MOCK_CIVIL_ID_DATABASE)
+ * 4. Full Cloud + Local Merged Sync
  */
 export async function findApprovedEmployeeByCivilId(rawCivilId: string): Promise<{
   cleanCivilId: string;
@@ -233,6 +259,8 @@ export async function findApprovedEmployeeByCivilId(rawCivilId: string): Promise
 }> {
   const cleanCivilId = normalizeCivilId(rawCivilId);
   if (!cleanCivilId) return { cleanCivilId: '' };
+
+  const mockRecord = MOCK_CIVIL_ID_DATABASE[cleanCivilId];
 
   // 1. Live lookup in Supabase cloud database
   try {
@@ -247,18 +275,63 @@ export async function findApprovedEmployeeByCivilId(rawCivilId: string): Promise
         currentLocal.push(cloudUser);
       }
       saveMockUsers(currentLocal);
-      return { cleanCivilId, existingUser: cloudUser, mockRecord: MOCK_CIVIL_ID_DATABASE[cleanCivilId] };
+
+      const dynamicMockRecord = mockRecord || {
+        name: cloudUser.name,
+        workEntity: cloudUser.workEntity || 'الشؤون التعليمية',
+        jobTitle: cloudUser.jobTitle || 'الشؤون التعليمية',
+        phone: cloudUser.phone || ''
+      };
+
+      return { cleanCivilId, existingUser: cloudUser, mockRecord: dynamicMockRecord };
     }
   } catch (e) {
     console.warn("Direct cloud lookup warning:", e);
   }
 
-  // 2. Sync full list and search
-  const allUsers = await syncUsersWithCloud();
-  const existingUser = allUsers.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
-  const mockRecord = MOCK_CIVIL_ID_DATABASE[cleanCivilId];
+  // 2. Check local cached users & initial defaults
+  const localUsers = getMockUsers();
+  let localMatch = localUsers.find(u => normalizeCivilId(u.civilId) === cleanCivilId || u.id === `emp-${cleanCivilId}` || u.id === `admin-${cleanCivilId}`);
+  if (!localMatch) {
+    localMatch = INITIAL_DEFAULT_USERS.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
+  }
 
-  return { cleanCivilId, existingUser, mockRecord };
+  if (localMatch) {
+    // If local match exists, attempt background sync to cloud so other devices get it too
+    upsertUserToSupabase(localMatch).catch(() => {});
+    return {
+      cleanCivilId,
+      existingUser: localMatch,
+      mockRecord: mockRecord || {
+        name: localMatch.name,
+        workEntity: localMatch.workEntity || 'الشؤون التعليمية',
+        jobTitle: localMatch.jobTitle || 'الشؤون التعليمية',
+        phone: localMatch.phone || ''
+      }
+    };
+  }
+
+  // 3. Sync full list from cloud and search
+  try {
+    const allUsers = await syncUsersWithCloud();
+    const existingUser = allUsers.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
+    if (existingUser) {
+      return {
+        cleanCivilId,
+        existingUser,
+        mockRecord: mockRecord || {
+          name: existingUser.name,
+          workEntity: existingUser.workEntity || 'الشؤون التعليمية',
+          jobTitle: existingUser.jobTitle || 'الشؤون التعليمية',
+          phone: existingUser.phone || ''
+        }
+      };
+    }
+  } catch (err) {
+    console.warn("Sync error during employee lookup:", err);
+  }
+
+  return { cleanCivilId, existingUser: undefined, mockRecord };
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess }) => {

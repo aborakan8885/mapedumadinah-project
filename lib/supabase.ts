@@ -482,22 +482,35 @@ export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<U
   if (!supabase || !cleanId) return null;
 
   try {
-    // 1. Direct query on civil_id or id
+    // 1. Direct query on civil_id or id variants
     const { data: directData, error: directErr } = await supabase
       .from('users')
       .select('*')
-      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId}`);
+      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId},id.eq.${cleanId}`);
 
     if (!directErr && directData && directData.length > 0) {
-      // Prefer a record that has a password set if multiple exist
       const mapped = directData.map(mapSupabaseRowToUser);
       return mapped.find(u => Boolean(u.password)) || mapped[0];
     }
 
-    // 2. Fallback: fetch all users and match after normalizing civil_id (handles any legacy non-normalized rows)
+    // 2. Direct exact match on civil_id
+    const { data: eqData } = await supabase
+      .from('users')
+      .select('*')
+      .eq('civil_id', cleanId);
+
+    if (eqData && eqData.length > 0) {
+      const mapped = eqData.map(mapSupabaseRowToUser);
+      return mapped.find(u => Boolean(u.password)) || mapped[0];
+    }
+
+    // 3. Fallback: fetch all users and match after normalizing civil_id (handles any legacy non-normalized rows)
     const allUsers = await fetchUsersFromSupabase();
     if (allUsers && allUsers.length > 0) {
-      const matched = allUsers.find(u => normalizeCivilId(u.civilId) === cleanId);
+      const matched = allUsers.find(u =>
+        normalizeCivilId(u.civilId) === cleanId ||
+        (u.id && u.id.includes(cleanId))
+      );
       if (matched) return matched;
     }
 
