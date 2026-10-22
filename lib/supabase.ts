@@ -527,107 +527,73 @@ export async function fetchUsersFromSupabase(): Promise<User[] | null> {
 }
 
 export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<User | null> {
-  const supabase = getSupabaseClient();
-  const cleanId = normalizeCivilId(civilId);
-  if (!supabase || !cleanId) return null;
-
-  try {
-    // 1. Direct query on civil_id or id variants in 'users' table
-    const { data: directData, error: directErr } = await supabase
-      .from('users')
-      .select('*')
-      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId},id.eq.${cleanId}`);
-
-    if (!directErr && directData && directData.length > 0) {
-      const mapped = directData.map(mapSupabaseRowToUser);
-      return mapped.find(u => Boolean(u.password)) || mapped[0];
-    }
-
-    // 2. Direct exact match on civil_id
-    const { data: eqData } = await supabase
-      .from('users')
-      .select('*')
-      .eq('civil_id', cleanId);
-
-    if (eqData && eqData.length > 0) {
-      const mapped = eqData.map(mapSupabaseRowToUser);
-      return mapped.find(u => Boolean(u.password)) || mapped[0];
-    }
-
-    // 3. Fallback: check backup stored in educational_files table
-    const { data: backupRow } = await supabase
-      .from('educational_files')
-      .select('data')
-      .eq('id', 'system_users_backup')
-      .maybeSingle();
-
-    if (backupRow && Array.isArray(backupRow.data)) {
-      const backupUsers = (backupRow.data as any[]).map(mapSupabaseRowToUser);
-      const matched = backupUsers.find(u =>
-        normalizeCivilId(u.civilId) === cleanId ||
-        (u.id && u.id.includes(cleanId))
-      );
-      if (matched) return matched;
-    }
-
-    // 4. Fallback: fetch all users and match after normalizing civil_id
-    const allUsers = await fetchUsersFromSupabase();
-    if (allUsers && allUsers.length > 0) {
-      const matched = allUsers.find(u =>
-        normalizeCivilId(u.civilId) === cleanId ||
-        (u.id && u.id.includes(cleanId))
-      );
-      if (matched) return matched;
-    }
-
-    return null;
-  } catch (err) {
-    console.warn("Supabase fetchUserByCivilId error:", err);
-    return null;
-  }
+  return lookupUserByCivilId(civilId);
 }
 
 export async function lookupUserByCivilId(civilId: string): Promise<User | null> {
   const supabase = getSupabaseClient();
-  const cleanId = normalizeCivilId(civilId);
-  if (!supabase || !cleanId) return null;
+  const cleanId = String(normalizeCivilId(civilId)).trim();
+
+  // تنبيه 1: توضيح الرقم الذي نبحث عنه ونوع البيانات
+  alert(`[DEBUG 1 - بدء البحث]\nالرقم المطلوب البحث عنه: "${cleanId}"\nنوع البيانات: ${typeof cleanId}`);
+
+  if (!supabase || !cleanId) {
+    alert(`[DEBUG تنبيه] عميل Supabase غير مهيأ أو cleanId فارغ`);
+    return null;
+  }
 
   try {
-    // 1. Direct query on users table using precise .or condition
+    // 1. الاستعلام المباشر من جدول users عبر .eq('civil_id', cleanId) وتأكيد النوع String
     const { data: usersData, error: usersErr } = await supabase
       .from('users')
       .select('*')
-      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId},id.eq.${cleanId}`);
+      .eq('civil_id', cleanId);
 
-    if (usersErr) {
-      console.error("Supabase lookupUserByCivilId query error:", usersErr);
-    } else if (usersData && usersData.length > 0) {
+    // تنبيه 2: توضيح ما رجع من جدول users (هل هو null أم مصفوفة والعدد)
+    const usersDataDesc = usersErr
+      ? `خطأ: ${usersErr.message} (كود: ${usersErr.code})`
+      : (usersData === null ? 'null' : Array.isArray(usersData) ? `مصفوفة (العدد: ${usersData.length})` : typeof usersData);
+
+    alert(`[DEBUG 2 - نتيجة جدول users]\nالحالة: ${usersDataDesc}\nالبيانات المسترجعة: ${JSON.stringify(usersData)}`);
+
+    if (!usersErr && usersData && usersData.length > 0) {
       const mapped = usersData.map(mapSupabaseRowToUser);
-      return mapped.find(u => Boolean(u.password)) || mapped[0];
+      const matched = mapped.find(u => Boolean(u.password)) || mapped[0];
+      alert(`[DEBUG نجاح] تم العثور على المستخدم في جدول users:\nالاسم: ${matched.name}\nالسجل: ${matched.civilId}`);
+      return matched;
     }
 
-    // 2. Fallback: query 'educational_files' table with id 'system_users_backup'
+    // 2. بديل احتياطي: البحث في educational_files (السجل system_users_backup)
     const { data: backupRow, error: backupErr } = await supabase
       .from('educational_files')
       .select('data')
       .eq('id', 'system_users_backup')
       .maybeSingle();
 
-    if (backupErr) {
-      console.error("Supabase backup lookup error:", backupErr);
-    } else if (backupRow && Array.isArray(backupRow.data)) {
+    // تنبيه 3: توضيح ما رجع من جدول educational_files
+    const backupDesc = backupErr
+      ? `خطأ: ${backupErr.message}`
+      : (backupRow ? `موجود (النوع: ${Array.isArray(backupRow.data) ? `مصفوفة بـ ${backupRow.data.length} سجل` : typeof backupRow.data})` : 'null');
+
+    alert(`[DEBUG 3 - نتيجة جدول educational_files الاحتياطي]\nالحالة: ${backupDesc}\nالبيانات: ${JSON.stringify(backupRow?.data || null)}`);
+
+    if (!backupErr && backupRow && Array.isArray(backupRow.data)) {
       const backupUsers = (backupRow.data as any[]).map(mapSupabaseRowToUser);
       const matched = backupUsers.find(u =>
-        normalizeCivilId(u.civilId) === cleanId ||
-        normalizeCivilId(u.id) === cleanId ||
+        String(normalizeCivilId(u.civilId)) === cleanId ||
+        String(normalizeCivilId(u.id)) === cleanId ||
         (u.id && u.id.includes(cleanId))
       );
-      if (matched) return matched;
+      if (matched) {
+        alert(`[DEBUG نجاح من الاحتياطي] تم العثور على المستخدم في النسخ الاحتياطي:\nالاسم: ${matched.name}\nالسجل: ${matched.civilId}`);
+        return matched;
+      }
     }
 
+    alert(`[DEBUG لم يتم العثور] لم يتم العثور على المستخدم برقم السجل "${cleanId}" في الجدولين.`);
     return null;
-  } catch (err) {
-    console.error("lookupUserByCivilId exception:", err);
+  } catch (err: any) {
+    alert(`[DEBUG استثناء في البحث]: ${err?.message || err}`);
     return null;
   }
 }
@@ -635,16 +601,18 @@ export async function lookupUserByCivilId(civilId: string): Promise<User | null>
 export async function saveUserToCloud(user: User): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();
   if (!supabase) {
+    alert('[DEBUG SAVE خطأ]: تعذر الاتصال بـ Supabase');
     return { success: false, error: 'تعذر الاتصال بقاعدة بيانات Supabase (العميل غير مهيأ)' };
   }
 
   try {
-    const cleanCivilId = normalizeCivilId(user.civilId || '');
+    const cleanCivilId = String(normalizeCivilId(user.civilId || '')).trim();
     if (!cleanCivilId) {
+      alert('[DEBUG SAVE خطأ]: رقم السجل المدني مفقود أو غير صالح');
       return { success: false, error: 'رقم السجل المدني مفقود أو غير صالح' };
     }
 
-    const canonicalId = user.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`);
+    const canonicalId = user.id || `emp-${cleanCivilId}`;
 
     const permissionsPayload = {
       visibleLayers: user.permissions?.visibleLayers || ['schools', 'kmz'],
@@ -667,20 +635,23 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       ...(user.password ? { password: user.password } : {})
     };
 
-    // 1. Primary write to 'users' table
+    // تنبيه قبل إرسال البيانات للسحابة مع طباعة civil_id ونوعه والاسم
+    alert(`[DEBUG SAVE 1 - قبل الإرسال للسحابة]\nجاري إرسال البيانات:\n- السجل المدني (civil_id): "${payload.civil_id}"\n- نوع البيانات: ${typeof payload.civil_id}\n- المعرف (id): "${payload.id}"\n- الاسم: "${payload.name}"`);
+
+    // 1. الحفظ في جدول users مع فحص النتيجة
     const { error: usersError } = await supabase
       .from('users')
       .upsert(payload, { onConflict: 'id' });
 
     if (usersError) {
-      console.error("Supabase users upsert error:", usersError);
+      alert(`[DEBUG SAVE 2 - فشل الحفظ في جدول users]\nالسبب: ${usersError.message}\nالكود: ${usersError.code}`);
       return {
         success: false,
-        error: `خطأ في جدول users: ${usersError.message} (رمز الخطأ: ${usersError.code || 'RLS_VIOLATION'})`
+        error: `خطأ في جدول users: ${usersError.message} (رمز الخطأ: ${usersError.code || 'RLS_ERROR'})`
       };
     }
 
-    // 2. Secondary write to 'educational_files' (system_users_backup)
+    // 2. الحفظ في جدول educational_files (system_users_backup) مع فحص النتيجة
     const { data: currentBackup, error: fetchBackupError } = await supabase
       .from('educational_files')
       .select('data')
@@ -688,7 +659,7 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       .maybeSingle();
 
     if (fetchBackupError) {
-      console.error("Supabase fetch backup error:", fetchBackupError);
+      alert(`[DEBUG SAVE 3 - فشل قراءة جدول educational_files]\nالسبب: ${fetchBackupError.message}`);
       return {
         success: false,
         error: `خطأ في قراءة النسخ الاحتياطي: ${fetchBackupError.message}`
@@ -696,7 +667,7 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
     }
 
     let userArray: any[] = (currentBackup && Array.isArray(currentBackup.data)) ? currentBackup.data : [];
-    const idx = userArray.findIndex((u: any) => u.id === canonicalId || normalizeCivilId(u.civil_id) === cleanCivilId);
+    const idx = userArray.findIndex((u: any) => u.id === canonicalId || String(normalizeCivilId(u.civil_id)) === cleanCivilId);
     if (idx >= 0) {
       userArray[idx] = payload;
     } else {
@@ -714,16 +685,18 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       }, { onConflict: 'id' });
 
     if (backupError) {
-      console.error("Supabase educational_files backup upsert error:", backupError);
+      alert(`[DEBUG SAVE 4 - فشل الحفظ في جدول educational_files]\nالسبب: ${backupError.message}`);
       return {
         success: false,
-        error: `خطأ في جدول النسخ الاحتياطي (educational_files): ${backupError.message}`
+        error: `خطأ في جدول النسخ الاحتياطي: ${backupError.message}`
       };
     }
 
+    // تنبيه عند نجاح الحفظ في كلا الجدولين
+    alert(`[DEBUG SAVE 5 - نجاح الحفظ السحابي المؤكد!]\nتم الحفظ في الجدولين بنجاح:\n- users: تم الحفظ\n- educational_files: تم النسخ الاحتياطي`);
     return { success: true };
   } catch (err: any) {
-    console.error("saveUserToCloud exception:", err);
+    alert(`[DEBUG SAVE استثناء غير متوقع]: ${err?.message || err}`);
     return {
       success: false,
       error: err?.message || 'خطأ غير متوقع أثناء الحفظ السحابي'
