@@ -534,50 +534,45 @@ export async function lookupUserByCivilId(civilId: string): Promise<User | null>
   const supabase = getSupabaseClient();
   const cleanId = String(normalizeCivilId(civilId)).trim();
 
-  // تنبيه 1: توضيح الرقم الذي نبحث عنه ونوع البيانات
-  alert(`[DEBUG 1 - بدء البحث]\nالرقم المطلوب البحث عنه: "${cleanId}"\nنوع البيانات: ${typeof cleanId}`);
-
   if (!supabase || !cleanId) {
-    alert(`[DEBUG تنبيه] عميل Supabase غير مهيأ أو cleanId فارغ`);
     return null;
   }
 
   try {
-    // 1. الاستعلام المباشر من جدول users عبر .eq('civil_id', cleanId) وتأكيد النوع String
+    // 1. الاستعلام المباشر من جدول users عبر مطابقة السجل المدني نصياً
     const { data: usersData, error: usersErr } = await supabase
       .from('users')
       .select('*')
       .eq('civil_id', cleanId);
 
-    // تنبيه 2: توضيح ما رجع من جدول users (هل هو null أم مصفوفة والعدد)
-    const usersDataDesc = usersErr
-      ? `خطأ: ${usersErr.message} (كود: ${usersErr.code})`
-      : (usersData === null ? 'null' : Array.isArray(usersData) ? `مصفوفة (العدد: ${usersData.length})` : typeof usersData);
-
-    alert(`[DEBUG 2 - نتيجة جدول users]\nالحالة: ${usersDataDesc}\nالبيانات المسترجعة: ${JSON.stringify(usersData)}`);
-
-    if (!usersErr && usersData && usersData.length > 0) {
+    if (usersErr) {
+      console.error("Supabase lookupUserByCivilId query error:", usersErr);
+    } else if (usersData && usersData.length > 0) {
       const mapped = usersData.map(mapSupabaseRowToUser);
-      const matched = mapped.find(u => Boolean(u.password)) || mapped[0];
-      alert(`[DEBUG نجاح] تم العثور على المستخدم في جدول users:\nالاسم: ${matched.name}\nالسجل: ${matched.civilId}`);
-      return matched;
+      return mapped.find(u => Boolean(u.password)) || mapped[0];
     }
 
-    // 2. بديل احتياطي: البحث في educational_files (السجل system_users_backup)
+    // فحص إضافي عبر المعرف id = emp-cleanId
+    const { data: idData } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', `emp-${cleanId}`);
+
+    if (idData && idData.length > 0) {
+      const mapped = idData.map(mapSupabaseRowToUser);
+      return mapped.find(u => Boolean(u.password)) || mapped[0];
+    }
+
+    // 2. بديل احتياطي: البحث في جدول educational_files (السجل system_users_backup)
     const { data: backupRow, error: backupErr } = await supabase
       .from('educational_files')
       .select('data')
       .eq('id', 'system_users_backup')
       .maybeSingle();
 
-    // تنبيه 3: توضيح ما رجع من جدول educational_files
-    const backupDesc = backupErr
-      ? `خطأ: ${backupErr.message}`
-      : (backupRow ? `موجود (النوع: ${Array.isArray(backupRow.data) ? `مصفوفة بـ ${backupRow.data.length} سجل` : typeof backupRow.data})` : 'null');
-
-    alert(`[DEBUG 3 - نتيجة جدول educational_files الاحتياطي]\nالحالة: ${backupDesc}\nالبيانات: ${JSON.stringify(backupRow?.data || null)}`);
-
-    if (!backupErr && backupRow && Array.isArray(backupRow.data)) {
+    if (backupErr) {
+      console.error("Supabase backup lookup error:", backupErr);
+    } else if (backupRow && Array.isArray(backupRow.data)) {
       const backupUsers = (backupRow.data as any[]).map(mapSupabaseRowToUser);
       const matched = backupUsers.find(u =>
         String(normalizeCivilId(u.civilId)) === cleanId ||
@@ -585,15 +580,13 @@ export async function lookupUserByCivilId(civilId: string): Promise<User | null>
         (u.id && u.id.includes(cleanId))
       );
       if (matched) {
-        alert(`[DEBUG نجاح من الاحتياطي] تم العثور على المستخدم في النسخ الاحتياطي:\nالاسم: ${matched.name}\nالسجل: ${matched.civilId}`);
         return matched;
       }
     }
 
-    alert(`[DEBUG لم يتم العثور] لم يتم العثور على المستخدم برقم السجل "${cleanId}" في الجدولين.`);
     return null;
   } catch (err: any) {
-    alert(`[DEBUG استثناء في البحث]: ${err?.message || err}`);
+    console.error("lookupUserByCivilId exception:", err);
     return null;
   }
 }
@@ -601,14 +594,12 @@ export async function lookupUserByCivilId(civilId: string): Promise<User | null>
 export async function saveUserToCloud(user: User): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    alert('[DEBUG SAVE خطأ]: تعذر الاتصال بـ Supabase');
     return { success: false, error: 'تعذر الاتصال بقاعدة بيانات Supabase (العميل غير مهيأ)' };
   }
 
   try {
     const cleanCivilId = String(normalizeCivilId(user.civilId || '')).trim();
     if (!cleanCivilId) {
-      alert('[DEBUG SAVE خطأ]: رقم السجل المدني مفقود أو غير صالح');
       return { success: false, error: 'رقم السجل المدني مفقود أو غير صالح' };
     }
 
@@ -635,23 +626,20 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       ...(user.password ? { password: user.password } : {})
     };
 
-    // تنبيه قبل إرسال البيانات للسحابة مع طباعة civil_id ونوعه والاسم
-    alert(`[DEBUG SAVE 1 - قبل الإرسال للسحابة]\nجاري إرسال البيانات:\n- السجل المدني (civil_id): "${payload.civil_id}"\n- نوع البيانات: ${typeof payload.civil_id}\n- المعرف (id): "${payload.id}"\n- الاسم: "${payload.name}"`);
-
-    // 1. الحفظ في جدول users مع فحص النتيجة
+    // 1. الحفظ في جدول users مع التحقق من الخطأ
     const { error: usersError } = await supabase
       .from('users')
       .upsert(payload, { onConflict: 'id' });
 
     if (usersError) {
-      alert(`[DEBUG SAVE 2 - فشل الحفظ في جدول users]\nالسبب: ${usersError.message}\nالكود: ${usersError.code}`);
+      console.error("Supabase users upsert error:", usersError);
       return {
         success: false,
         error: `خطأ في جدول users: ${usersError.message} (رمز الخطأ: ${usersError.code || 'RLS_ERROR'})`
       };
     }
 
-    // 2. الحفظ في جدول educational_files (system_users_backup) مع فحص النتيجة
+    // 2. الحفظ في جدول educational_files (system_users_backup) مع التحقق من الخطأ
     const { data: currentBackup, error: fetchBackupError } = await supabase
       .from('educational_files')
       .select('data')
@@ -659,7 +647,7 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       .maybeSingle();
 
     if (fetchBackupError) {
-      alert(`[DEBUG SAVE 3 - فشل قراءة جدول educational_files]\nالسبب: ${fetchBackupError.message}`);
+      console.error("Supabase fetch backup error:", fetchBackupError);
       return {
         success: false,
         error: `خطأ في قراءة النسخ الاحتياطي: ${fetchBackupError.message}`
@@ -685,18 +673,16 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       }, { onConflict: 'id' });
 
     if (backupError) {
-      alert(`[DEBUG SAVE 4 - فشل الحفظ في جدول educational_files]\nالسبب: ${backupError.message}`);
+      console.error("Supabase educational_files backup upsert error:", backupError);
       return {
         success: false,
         error: `خطأ في جدول النسخ الاحتياطي: ${backupError.message}`
       };
     }
 
-    // تنبيه عند نجاح الحفظ في كلا الجدولين
-    alert(`[DEBUG SAVE 5 - نجاح الحفظ السحابي المؤكد!]\nتم الحفظ في الجدولين بنجاح:\n- users: تم الحفظ\n- educational_files: تم النسخ الاحتياطي`);
     return { success: true };
   } catch (err: any) {
-    alert(`[DEBUG SAVE استثناء غير متوقع]: ${err?.message || err}`);
+    console.error("saveUserToCloud exception:", err);
     return {
       success: false,
       error: err?.message || 'خطأ غير متوقع أثناء الحفظ السحابي'

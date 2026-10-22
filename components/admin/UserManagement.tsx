@@ -258,14 +258,8 @@ export default function UserManagement() {
                 createdAt: targetExisting?.createdAt || new Date().toISOString()
             };
 
-            // تنبيه قبل إرسال البيانات للسحابة
-            alert(`[DEBUG ADMIN 1 - بدء الحفظ من لوحة التحكم]\nالاسم: ${savedUser.name}\nالسجل المدني (civil_id): "${savedUser.civilId}"\nنوع البيانات: ${typeof savedUser.civilId}\nالمعرف: "${savedUser.id}"`);
-
             // 1. First save directly to cloud and wait for confirmation
             const cloudRes = await saveUserToCloud(savedUser);
-
-            // تنبيه بعد استلام الرد من السحابة
-            alert(`[DEBUG ADMIN 2 - نتيجة الحفظ المستلمة]\nالنجاح (success): ${cloudRes.success}\nرسالة الخطأ: ${cloudRes.error || 'لا يوجد أخطاء'}`);
 
             if (!cloudRes.success) {
                 alert(`فشل الحفظ السحابي: ${cloudRes.error || 'تعذر الاتصال بالسحابة'}`);
