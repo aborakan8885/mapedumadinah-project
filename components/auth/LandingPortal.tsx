@@ -1,9 +1,19 @@
-import React, { useState } from 'react';
-import { User as UserIcon, ShieldCheck, LogIn, Search, CheckCircle2, AlertTriangle, KeyRound, Building, MapPin, Sparkles, ArrowRight, EyeOff, Lock, FileSpreadsheet, MessageSquare, BookOpen } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User as UserIcon, ShieldCheck, LogIn, Search, CheckCircle2, AlertTriangle, KeyRound, Building, MapPin, Sparkles, ArrowRight, EyeOff, Lock, FileSpreadsheet, MessageSquare, BookOpen, Loader2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Alert, AlertDescription } from '../ui/Alert';
 import type { User } from '../../types';
-import { getMockUsers, saveMockUsers } from '../modals/AuthModal';
+import {
+  saveMockUsers,
+  syncUsersWithCloud,
+  findApprovedEmployeeByCivilId,
+  unmarkUserDeletedLocally
+} from '../modals/AuthModal';
+import {
+  normalizeCivilId,
+  upsertUserToSupabase,
+  subscribeToUsersChanges
+} from '../../lib/supabase';
 import { MinistryLogo } from '../MinistryLogo';
 import { DeveloperContactModal } from './DeveloperContactModal';
 import { GuideModal } from '../modals/GuideModal';
@@ -12,44 +22,11 @@ interface LandingPortalProps {
   onLoginSuccess: (user: User) => void;
 }
 
-// Simulated Civil ID database for Ministry Employees
-const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: string; jobTitle: string; phone: string }> = {
-  '1098765432': {
-    name: 'عبدالرحمن بن محمد الغامدي',
-    workEntity: 'الشؤون التعليمية • وحدة القبول',
-    jobTitle: 'مهندس جغرافيا ومساحة',
-    phone: '0512345678'
-  },
-  '1055544433': {
-    name: 'منى بنت عبدالعزيز الجهني',
-    workEntity: 'الشؤون التعليمية • وحدة القبول',
-    jobTitle: 'رئيس قسم القبول التوزيعي',
-    phone: '0598765432'
-  },
-  '1022233344': {
-    name: 'فيصل بن بدر الصاعدي',
-    workEntity: 'مكتب تعليم وسط المدينة',
-    jobTitle: 'مشرف تخطيط ومباني',
-    phone: '0533333333'
-  },
-  '1011122233': {
-    name: 'سارة بنت خالد المطيري',
-    workEntity: 'الشؤون التعليمية • وحدة القبول',
-    jobTitle: 'أخصائي بيانات واستعلام مكاني',
-    phone: '0566677788'
-  },
-  '1044455566': {
-    name: 'فهد بن أحمد الرشيدي',
-    workEntity: 'إدارة التخطيط المدرسي',
-    jobTitle: 'محلل نظم جغرافية',
-    phone: '0544411122'
-  }
-};
-
 export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) => {
   const [selectedGate, setSelectedGate] = useState<'employee' | 'beneficiary'>('employee');
   const [employeeMode, setEmployeeMode] = useState<'login' | 'register_step1' | 'register_step2' | 'register_step3'>('login');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
 
   // Login form state
@@ -62,6 +39,17 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isGuideOpen, setIsGuideOpen] = useState(false);
+
+  // Sync users from Supabase cloud on mount & realtime updates
+  useEffect(() => {
+    syncUsersWithCloud().catch(() => {});
+    const unsubscribe = subscribeToUsersChanges(() => {
+      syncUsersWithCloud().catch(() => {});
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Beneficiary login handler
   const handleBeneficiaryAccess = () => {
@@ -83,10 +71,11 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
   };
 
   // Employee Login handler
-  const handleEmployeeLogin = (e: React.FormEvent) => {
+  const handleEmployeeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const idClean = civilIdLogin.trim();
+    const rawId = civilIdLogin.trim();
+    const idClean = normalizeCivilId(rawId) || rawId;
     const pwdClean = passwordLogin.trim();
 
     if (!idClean || !pwdClean) {
@@ -116,7 +105,7 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
     }
 
     // Default hardcoded admin fallback
-    if ((idClean.toLowerCase() === 'admin' || idClean === '1000000000') && pwdClean === 'admin') {
+    if ((rawId.toLowerCase() === 'admin' || idClean === '1000000000') && pwdClean === 'admin') {
       const adminUser: User = {
         id: 'admin-user',
         civilId: '1000000000',
@@ -136,57 +125,93 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
       return;
     }
 
-    const users = getMockUsers();
-    const foundUser = users.find(u => 
-      (u.civilId === idClean || u.name.toLowerCase() === idClean.toLowerCase()) && 
-      u.password === pwdClean
-    );
+    setIsSubmitting(true);
+    try {
+      const { existingUser: cloudMatch } = await findApprovedEmployeeByCivilId(idClean);
+      const users = await syncUsersWithCloud();
 
-    if (foundUser) {
-      if (foundUser.status === 'disabled') {
-        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+      const matchedByCivilId = cloudMatch || users.find(u =>
+        normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()
+      );
+
+      // If user was added by admin in cloud/system but hasn't created their password yet, take them directly to Step 2
+      if (matchedByCivilId && !matchedByCivilId.password) {
+        if (matchedByCivilId.status === 'disabled') {
+          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+          return;
+        }
+        setFetchedEmployee({
+          civilId: normalizeCivilId(matchedByCivilId.civilId) || idClean,
+          name: matchedByCivilId.name,
+          workEntity: matchedByCivilId.workEntity || 'الشؤون التعليمية',
+          jobTitle: matchedByCivilId.jobTitle || 'الشؤون التعليمية',
+          phone: matchedByCivilId.phone || ''
+        });
+        setEmployeeMode('register_step2');
         return;
       }
-      onLoginSuccess(foundUser);
-    } else {
-      setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+
+      const foundUser = users.find(u =>
+        (normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()) &&
+        u.password === pwdClean
+      ) || (cloudMatch && cloudMatch.password === pwdClean ? cloudMatch : undefined);
+
+      if (foundUser) {
+        if (foundUser.status === 'disabled') {
+          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+          return;
+        }
+        onLoginSuccess(foundUser);
+      } else {
+        setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // Step 1: Civil ID Search
-  const handleCivilIdFetch = (e: React.FormEvent) => {
+  // Step 1: Civil ID Search (Live Cloud + Local Fetch)
+  const handleCivilIdFetch = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const idClean = inputCivilId.trim();
+    const idClean = normalizeCivilId(inputCivilId);
 
     if (!idClean || idClean.length < 5) {
       setError('الرجاء إدخال رقم السجل المدني بشكل صحيح.');
       return;
     }
 
-    const users = getMockUsers();
-    const existingUser = users.find(u => u.civilId === idClean);
-    const mockRecord = MOCK_CIVIL_ID_DATABASE[idClean];
+    setIsSubmitting(true);
+    try {
+      const { existingUser, mockRecord } = await findApprovedEmployeeByCivilId(idClean);
 
-    if (!existingUser && !mockRecord) {
-      setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
-      return;
+      if (!existingUser && !mockRecord) {
+        setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
+        return;
+      }
+
+      if (existingUser?.status === 'disabled') {
+        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+        return;
+      }
+
+      const name = existingUser?.name || mockRecord?.name || `منسوب تعليم (${idClean.slice(-4)})`;
+      const workEntity = existingUser?.workEntity || mockRecord?.workEntity || 'الشؤون التعليمية';
+      const jobTitle = existingUser?.jobTitle || mockRecord?.jobTitle || 'الشؤون التعليمية';
+      const phone = existingUser?.phone || mockRecord?.phone || '';
+
+      setFetchedEmployee({
+        civilId: idClean,
+        name,
+        workEntity,
+        jobTitle,
+        phone
+      });
+
+      setEmployeeMode('register_step2');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const name = existingUser?.name || mockRecord?.name || `منسوب تعليم (${idClean.slice(-4)})`;
-    const workEntity = existingUser?.workEntity || mockRecord?.workEntity || 'الشؤون التعليمية';
-    const jobTitle = existingUser?.jobTitle || mockRecord?.jobTitle || 'الشؤون التعليمية';
-    const phone = existingUser?.phone || mockRecord?.phone || '';
-
-    setFetchedEmployee({
-      civilId: idClean,
-      name,
-      workEntity,
-      jobTitle,
-      phone
-    });
-
-    setEmployeeMode('register_step2');
   };
 
   const handleConfirmEmployeeData = () => {
@@ -194,7 +219,7 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
     setEmployeeMode('register_step3');
   };
 
-  const handleFinalRegistration = (e: React.FormEvent) => {
+  const handleFinalRegistration = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -210,48 +235,57 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
 
     if (!fetchedEmployee) return;
 
-    const users = getMockUsers();
-    const existingIndex = users.findIndex(u => u.civilId === fetchedEmployee.civilId);
+    setIsSubmitting(true);
+    try {
+      const cleanId = normalizeCivilId(fetchedEmployee.civilId);
+      const users = await syncUsersWithCloud();
+      const existingIndex = users.findIndex(u => normalizeCivilId(u.civilId) === cleanId);
 
-    let finalUser: User;
+      let finalUser: User;
 
-    if (existingIndex >= 0) {
-      const existingUser = users[existingIndex];
-      finalUser = {
-        ...existingUser,
-        password: newPassword,
-        name: fetchedEmployee.name || existingUser.name,
-        workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
-        jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
-        phone: fetchedEmployee.phone || existingUser.phone,
-        status: 'active'
-      };
-      users[existingIndex] = finalUser;
-      saveMockUsers(users);
-    } else {
-      finalUser = {
-        id: `emp-${fetchedEmployee.civilId}`,
-        civilId: fetchedEmployee.civilId,
-        name: fetchedEmployee.name,
-        password: newPassword,
-        role: 'user',
-        userType: 'employee',
-        workEntity: fetchedEmployee.workEntity,
-        jobTitle: fetchedEmployee.jobTitle,
-        phone: fetchedEmployee.phone,
-        status: 'active',
-        permissions: {
-          visibleLayers: ['schools', 'kmz'],
-          canViewCoordinates: true,
-          canExportReports: true,
-          canUseSurroundingAnalysis: true
-        },
-        createdAt: new Date().toISOString()
-      };
-      saveMockUsers([...users, finalUser]);
+      if (existingIndex >= 0) {
+        const existingUser = users[existingIndex];
+        finalUser = {
+          ...existingUser,
+          civilId: cleanId,
+          password: newPassword,
+          name: fetchedEmployee.name || existingUser.name,
+          workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
+          jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
+          phone: fetchedEmployee.phone || existingUser.phone,
+          status: 'active'
+        };
+        users[existingIndex] = finalUser;
+        saveMockUsers(users);
+      } else {
+        finalUser = {
+          id: `emp-${cleanId}`,
+          civilId: cleanId,
+          name: fetchedEmployee.name,
+          password: newPassword,
+          role: 'user',
+          userType: 'employee',
+          workEntity: fetchedEmployee.workEntity,
+          jobTitle: fetchedEmployee.jobTitle,
+          phone: fetchedEmployee.phone,
+          status: 'active',
+          permissions: {
+            visibleLayers: ['schools', 'kmz'],
+            canViewCoordinates: true,
+            canExportReports: true,
+            canUseSurroundingAnalysis: true
+          },
+          createdAt: new Date().toISOString()
+        };
+        saveMockUsers([...users, finalUser]);
+      }
+
+      unmarkUserDeletedLocally(finalUser.id, finalUser.civilId);
+      await upsertUserToSupabase(finalUser).catch(err => console.warn("Cloud registration sync warning:", err));
+      onLoginSuccess(finalUser);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    onLoginSuccess(finalUser);
   };
 
   return (
@@ -370,11 +404,12 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
 
                   <Button
                     type="submit"
+                    disabled={isSubmitting}
                     onClick={() => setSelectedGate('employee')}
                     className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-lg shadow-md transition-all flex items-center justify-center gap-1.5 text-xs"
                   >
-                    <LogIn className="h-3.5 w-3.5" />
-                    <span>تسجيل الدخول والتنقل للموقع</span>
+                    {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LogIn className="h-3.5 w-3.5" />}
+                    <span>{isSubmitting ? 'جاري التحقق من الحساب...' : 'تسجيل الدخول والتنقل للموقع'}</span>
                   </Button>
 
                   <div className="pt-1.5 border-t border-slate-800 text-center">
@@ -401,11 +436,12 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
                     <div className="relative">
                       <input
                         type="text"
+                        inputMode="numeric"
                         value={inputCivilId}
-                        onChange={e => setInputCivilId(e.target.value)}
+                        onChange={e => setInputCivilId(normalizeCivilId(e.target.value))}
                         placeholder="مثال: 1098765432"
                         className="w-full pl-3 pr-7 py-1.5 bg-slate-950 border border-slate-700 text-white rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none text-xs font-mono font-bold text-center tracking-wider"
-                        maxLength={10}
+                        maxLength={15}
                         required
                       />
                       <UserIcon className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
@@ -413,9 +449,9 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
                   </div>
 
                   <div className="flex gap-2 pt-1">
-                    <Button type="submit" className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1">
-                      <Search className="h-3.5 w-3.5" />
-                      استدعاء البيانات
+                    <Button type="submit" disabled={isSubmitting} className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1">
+                      {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                      <span>{isSubmitting ? 'جاري استدعاء البيانات...' : 'استدعاء البيانات'}</span>
                     </Button>
                     <Button type="button" variant="secondary" onClick={() => setEmployeeMode('login')} className="py-1.5 bg-slate-800 text-slate-300 hover:bg-slate-700 rounded-lg text-xs">
                       إلغاء
@@ -495,9 +531,9 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
                     </div>
                   </div>
 
-                  <Button type="submit" className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-lg text-xs flex items-center justify-center gap-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    تأكيد كلمة المرور وتفعيل الحساب
+                  <Button type="submit" disabled={isSubmitting} className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-lg text-xs flex items-center justify-center gap-1">
+                    {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                    <span>{isSubmitting ? 'جاري تفعيل الحساب وحفظه سحابياً...' : 'تأكيد كلمة المرور وتفعيل الحساب'}</span>
                   </Button>
                 </form>
               )}

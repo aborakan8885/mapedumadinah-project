@@ -105,6 +105,7 @@ export type User = {
   civilId?: string;
   name: string;
   password?: string;
+  email?: string;
   role: 'user' | 'admin';
   userType?: UserTypeMode;
   workEntity: string;

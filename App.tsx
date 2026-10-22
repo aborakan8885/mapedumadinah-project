@@ -3,14 +3,14 @@ import React, { useState, useCallback, useEffect, createContext, useContext, Rea
 import { Header } from './components/Header';
 import { MapCanvas } from './components/MapCanvas';
 import { Sidebar } from './components/Sidebar';
-import { AuthModal } from './components/modals/AuthModal';
+import { AuthModal, syncUsersWithCloud } from './components/modals/AuthModal';
 import { LandingPortal } from './components/auth/LandingPortal';
 import { ReportsPanel } from './components/ReportsPanel';
 import { PrintReportModal } from './components/modals/PrintReportModal';
 import type { EducationalPlace, FilterState, Category, User, FileMapping, SchoolFilters, EarlyChildhoodFilters, DisabilitySupportFilters, SpecialEducationFilters, LandFilters, ProjectFilters, BuildingFilters } from './types';
 import { Search, Menu, SlidersHorizontal } from 'lucide-react';
 import { getAllFiles, deleteFile, putFile, loadFileData } from './lib/db';
-import { subscribeToFilesChanges } from './lib/supabase';
+import { subscribeToFilesChanges, subscribeToUsersChanges, normalizeCivilId } from './lib/supabase';
 import AdminPanel from './components/admin/AdminPanel';
 import type * as GeoJSON from 'geojson';
 // Local-Only Mode: Removed Firebase Auth import
@@ -1579,9 +1579,43 @@ function AppContent() {
     };
 
     syncUser();
+    // Automatically sync local & cloud users so any users added by Admin are pushed to Supabase
+    const syncCloudUsersAndSession = async () => {
+      try {
+        const syncedList = await syncUsersWithCloud();
+        const savedUserStr = localStorage.getItem('educational_map_current_user');
+        if (savedUserStr) {
+          const parsed: User = JSON.parse(savedUserStr);
+          if (parsed && parsed.userType === 'employee' && parsed.civilId && parsed.civilId !== '1068575628') {
+            const freshRecord = syncedList.find(u => normalizeCivilId(u.civilId) === normalizeCivilId(parsed.civilId));
+            if (freshRecord) {
+              if (freshRecord.status === 'disabled') {
+                setCurrentUser(null);
+                localStorage.removeItem('educational_map_current_user');
+              } else {
+                const updatedSessionUser = { ...parsed, ...freshRecord };
+                setCurrentUser(updatedSessionUser);
+                localStorage.setItem('educational_map_current_user', JSON.stringify(updatedSessionUser));
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    syncCloudUsersAndSession();
+
+    const unsubscribeUsers = subscribeToUsersChanges(() => {
+      syncCloudUsersAndSession();
+    });
+
     // Listen for storage changes in case of cross-tab login/logout
     window.addEventListener('storage', syncUser);
-    return () => window.removeEventListener('storage', syncUser);
+    return () => {
+      window.removeEventListener('storage', syncUser);
+      unsubscribeUsers();
+    };
   }, []);
 
   const { allPlaces, fileMappings, isLoading: isDataLoading } = useData();

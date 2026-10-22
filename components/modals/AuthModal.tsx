@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, LogIn, UserCheck, ShieldCheck, Search, CheckCircle2, AlertTriangle, KeyRound, Building, User as UserIcon, Loader2, Lock } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Alert, AlertDescription } from '../ui/Alert';
 import type { User } from '../../types';
-import { auth } from '../../lib/firebase';
+import {
+  fetchUsersFromSupabase,
+  fetchUserByCivilIdFromSupabase,
+  upsertUserToSupabase,
+  normalizeCivilId
+} from '../../lib/supabase';
 
 interface AuthModalProps {
   onClose: () => void;
@@ -12,8 +17,9 @@ interface AuthModalProps {
 }
 
 export const MOCK_USERS_KEY = 'educational_map_users';
+export const DELETED_USERS_KEY = 'educational_map_deleted_users';
 
-const INITIAL_DEFAULT_USERS: User[] = [
+export const INITIAL_DEFAULT_USERS: User[] = [
   {
     id: 'admin-1068575628',
     civilId: '1068575628',
@@ -22,6 +28,7 @@ const INITIAL_DEFAULT_USERS: User[] = [
     role: 'admin',
     userType: 'employee',
     workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
+    jobTitle: 'مسؤول النظام الرئيسي',
     status: 'active',
     email: 'aborakan8885@gmail.com',
     permissions: {
@@ -53,29 +60,7 @@ const INITIAL_DEFAULT_USERS: User[] = [
   }
 ];
 
-export const getMockUsers = (): User[] => {
-  try {
-    const usersJson = localStorage.getItem(MOCK_USERS_KEY);
-    if (!usersJson) {
-      localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(INITIAL_DEFAULT_USERS));
-      return INITIAL_DEFAULT_USERS;
-    }
-    return JSON.parse(usersJson);
-  } catch (e) {
-    console.error("Failed to parse users from localStorage", e);
-    return INITIAL_DEFAULT_USERS;
-  }
-};
-
-export const saveMockUsers = (users: User[]) => {
-  try {
-    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(users));
-  } catch (e) {
-    console.error("Failed to save users to localStorage", e);
-  }
-};
-
-const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: string; jobTitle: string; phone: string }> = {
+export const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: string; jobTitle: string; phone: string }> = {
   '1068575628': {
     name: 'مدير النظام الرئيسي',
     workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
@@ -93,8 +78,188 @@ const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: string;
     workEntity: 'الشؤون التعليمية • وحدة القبول',
     jobTitle: 'رئيس قسم القبول التوزيعي',
     phone: '0598765432'
+  },
+  '1022233344': {
+    name: 'فيصل بن بدر الصاعدي',
+    workEntity: 'مكتب تعليم وسط المدينة',
+    jobTitle: 'مشرف تخطيط ومباني',
+    phone: '0533333333'
+  },
+  '1011122233': {
+    name: 'سارة بنت خالد المطيري',
+    workEntity: 'الشؤون التعليمية • وحدة القبول',
+    jobTitle: 'أخصائي بيانات واستعلام مكاني',
+    phone: '0566677788'
+  },
+  '1044455566': {
+    name: 'فهد بن أحمد الرشيدي',
+    workEntity: 'إدارة التخطيط المدرسي',
+    jobTitle: 'محلل نظم جغرافية',
+    phone: '0544411122'
   }
 };
+
+function getDeletedUserKeys(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_USERS_KEY);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw));
+  } catch {
+    return new Set();
+  }
+}
+
+export function markUserDeletedLocally(userId: string, civilId?: string): void {
+  try {
+    const set = getDeletedUserKeys();
+    if (userId) set.add(userId);
+    const cleanId = normalizeCivilId(civilId);
+    if (cleanId) set.add(cleanId);
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(Array.from(set)));
+  } catch {
+    // ignore
+  }
+}
+
+export function unmarkUserDeletedLocally(userId: string, civilId?: string): void {
+  try {
+    const set = getDeletedUserKeys();
+    if (userId) set.delete(userId);
+    const cleanId = normalizeCivilId(civilId);
+    if (cleanId) set.delete(cleanId);
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(Array.from(set)));
+  } catch {
+    // ignore
+  }
+}
+
+export const getMockUsers = (): User[] => {
+  try {
+    const usersJson = localStorage.getItem(MOCK_USERS_KEY);
+    if (!usersJson) {
+      localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(INITIAL_DEFAULT_USERS));
+      return INITIAL_DEFAULT_USERS;
+    }
+    const parsed: User[] = JSON.parse(usersJson);
+    return parsed.map(u => ({
+      ...u,
+      civilId: normalizeCivilId(u.civilId) || u.civilId
+    }));
+  } catch (e) {
+    console.error("Failed to parse users from localStorage", e);
+    return INITIAL_DEFAULT_USERS;
+  }
+};
+
+export const saveMockUsers = (users: User[]) => {
+  try {
+    const normalized = users.map(u => ({
+      ...u,
+      civilId: normalizeCivilId(u.civilId) || u.civilId
+    }));
+    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(normalized));
+  } catch (e) {
+    console.error("Failed to save users to localStorage", e);
+  }
+};
+
+/**
+ * Synchronizes local users with Supabase cloud database:
+ * 1. Fetches all users from Supabase 'users' table.
+ * 2. Automatically pushes any local users (that are not in Supabase and weren't deleted) up to Supabase.
+ * 3. Merges cloud and local records (preserving passwords) and updates localStorage cache.
+ */
+export async function syncUsersWithCloud(): Promise<User[]> {
+  const localUsers = getMockUsers();
+  const deletedKeys = getDeletedUserKeys();
+
+  try {
+    const cloudUsers = await fetchUsersFromSupabase();
+    if (cloudUsers === null) {
+      return localUsers;
+    }
+
+    const cloudByKey = new Map<string, User>();
+    for (const cu of cloudUsers) {
+      const key = normalizeCivilId(cu.civilId) || cu.id;
+      cloudByKey.set(key, cu);
+    }
+
+    // Push any local users that aren't in cloud yet (and weren't explicitly deleted)
+    const usersToPushToCloud: User[] = [];
+    for (const lu of localUsers) {
+      const key = normalizeCivilId(lu.civilId) || lu.id;
+      if (deletedKeys.has(lu.id) || (lu.civilId && deletedKeys.has(normalizeCivilId(lu.civilId)))) {
+        continue;
+      }
+      const existingCloud = cloudByKey.get(key);
+      if (!existingCloud) {
+        usersToPushToCloud.push(lu);
+        cloudByKey.set(key, lu);
+      } else if (!existingCloud.password && lu.password) {
+        // Local has password that cloud didn't have yet -> sync password up to cloud
+        const mergedWithPwd: User = { ...existingCloud, password: lu.password };
+        usersToPushToCloud.push(mergedWithPwd);
+        cloudByKey.set(key, mergedWithPwd);
+      }
+    }
+
+    if (usersToPushToCloud.length > 0) {
+      await Promise.allSettled(usersToPushToCloud.map(u => upsertUserToSupabase(u)));
+    }
+
+    const mergedList = Array.from(cloudByKey.values());
+    if (mergedList.length > 0) {
+      saveMockUsers(mergedList);
+      return mergedList;
+    }
+    return localUsers;
+  } catch (err) {
+    console.warn("Cloud user sync fallback to local:", err);
+    return localUsers;
+  }
+}
+
+/**
+ * Finds an approved employee by Civil ID across:
+ * 1. Live Supabase Cloud Database ('users' table)
+ * 2. Full Cloud + Local Synced List
+ * 3. Built-in Approved Civil ID Registry
+ */
+export async function findApprovedEmployeeByCivilId(rawCivilId: string): Promise<{
+  cleanCivilId: string;
+  existingUser?: User;
+  mockRecord?: { name: string; workEntity: string; jobTitle: string; phone: string };
+}> {
+  const cleanCivilId = normalizeCivilId(rawCivilId);
+  if (!cleanCivilId) return { cleanCivilId: '' };
+
+  // 1. Live lookup in Supabase cloud database
+  try {
+    const cloudUser = await fetchUserByCivilIdFromSupabase(cleanCivilId);
+    if (cloudUser) {
+      // Update local cache with this fresh user
+      const currentLocal = getMockUsers();
+      const idx = currentLocal.findIndex(u => normalizeCivilId(u.civilId) === cleanCivilId || u.id === cloudUser.id);
+      if (idx >= 0) {
+        currentLocal[idx] = { ...currentLocal[idx], ...cloudUser, password: cloudUser.password || currentLocal[idx].password };
+      } else {
+        currentLocal.push(cloudUser);
+      }
+      saveMockUsers(currentLocal);
+      return { cleanCivilId, existingUser: cloudUser, mockRecord: MOCK_CIVIL_ID_DATABASE[cleanCivilId] };
+    }
+  } catch (e) {
+    console.warn("Direct cloud lookup warning:", e);
+  }
+
+  // 2. Sync full list and search
+  const allUsers = await syncUsersWithCloud();
+  const existingUser = allUsers.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
+  const mockRecord = MOCK_CIVIL_ID_DATABASE[cleanCivilId];
+
+  return { cleanCivilId, existingUser, mockRecord };
+}
 
 export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess }) => {
   const [activeTab, setActiveTab] = useState<'beneficiary' | 'employee'>('employee');
@@ -106,18 +271,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
   const [civilIdLogin, setCivilIdLogin] = useState('');
   const [passwordLogin, setPasswordLogin] = useState('');
 
-  // Google Login handler (DISABLED - Local Mode)
-  const handleGoogleLogin = async () => {
-    setError('عذراً، تسجيل الدخول عبر Google معطل حالياً في الوضع المحلي. يرجى استخدام الدخول التقليدي برقم السجل.');
-  };
-
-  // Registration states (rest of code)
-
   // Registration states
   const [inputCivilId, setInputCivilId] = useState('');
   const [fetchedEmployee, setFetchedEmployee] = useState<{ name: string; civilId: string; workEntity: string; jobTitle: string; phone: string } | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+
+  useEffect(() => {
+    syncUsersWithCloud().catch(() => {});
+  }, []);
+
+  // Google Login handler (DISABLED - Local Mode)
+  const handleGoogleLogin = async () => {
+    setError('عذراً، تسجيل الدخول عبر Google معطل حالياً في الوضع المحلي. يرجى استخدام الدخول التقليدي برقم السجل.');
+  };
 
   // Beneficiary login handler
   const handleBeneficiaryAccess = () => {
@@ -130,7 +297,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
       status: 'active',
       permissions: {
         visibleLayers: ['schools', 'kmz'],
-        canViewCoordinates: false, // بدون البطاقة التفصيلية للإحداثيات
+        canViewCoordinates: false,
         canExportReports: true,
         canUseSurroundingAnalysis: true
       }
@@ -139,10 +306,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
   };
 
   // Employee Login handler
-  const handleEmployeeLogin = (e: React.FormEvent) => {
+  const handleEmployeeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const idClean = civilIdLogin.trim();
+    const rawId = civilIdLogin.trim();
+    const idClean = normalizeCivilId(rawId) || rawId;
     const pwdClean = passwordLogin.trim();
 
     if (!idClean || !pwdClean) {
@@ -171,58 +339,91 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
       return;
     }
 
-    const users = getMockUsers();
-    // Search by civilId or name
-    const foundUser = users.find(u => 
-      (u.civilId === idClean || u.name.toLowerCase() === idClean.toLowerCase()) && 
-      u.password === pwdClean
-    );
+    setIsLoading(true);
+    try {
+      const users = await syncUsersWithCloud();
+      const userByCivilId = users.find(u =>
+        normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()
+      );
 
-    if (foundUser) {
-      if (foundUser.status === 'disabled') {
-        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+      if (userByCivilId && !userByCivilId.password) {
+        // User was added by admin but hasn't created their password yet -> guide them directly to Step 2
+        if (userByCivilId.status === 'disabled') {
+          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+          return;
+        }
+        setFetchedEmployee({
+          civilId: normalizeCivilId(userByCivilId.civilId) || idClean,
+          name: userByCivilId.name,
+          workEntity: userByCivilId.workEntity || 'الشؤون التعليمية',
+          jobTitle: userByCivilId.jobTitle || 'الشؤون التعليمية',
+          phone: userByCivilId.phone || ''
+        });
+        setEmployeeMode('register_step2');
         return;
       }
-      onLoginSuccess(foundUser);
-    } else {
-      setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+
+      const foundUser = users.find(u =>
+        (normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()) &&
+        u.password === pwdClean
+      );
+
+      if (foundUser) {
+        if (foundUser.status === 'disabled') {
+          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+          return;
+        }
+        onLoginSuccess(foundUser);
+      } else {
+        setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
 
   // Step 1: Civil ID Search
-  const handleCivilIdFetch = (e: React.FormEvent) => {
+  const handleCivilIdFetch = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const idClean = inputCivilId.trim();
+    const idClean = normalizeCivilId(inputCivilId);
 
     if (!idClean || idClean.length < 5) {
       setError('الرجاء إدخال رقم السجل المدني بشكل صحيح.');
       return;
     }
 
-    const users = getMockUsers();
-    const existingUser = users.find(u => u.civilId === idClean);
-    const mockRecord = MOCK_CIVIL_ID_DATABASE[idClean];
+    setIsLoading(true);
+    try {
+      const { existingUser, mockRecord } = await findApprovedEmployeeByCivilId(idClean);
 
-    if (!existingUser && !mockRecord) {
-      setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
-      return;
+      if (!existingUser && !mockRecord) {
+        setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
+        return;
+      }
+
+      if (existingUser?.status === 'disabled') {
+        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+        return;
+      }
+
+      const name = existingUser?.name || mockRecord?.name || `منسوب تعليم (${idClean.slice(-4)})`;
+      const workEntity = existingUser?.workEntity || mockRecord?.workEntity || 'الشؤون التعليمية';
+      const jobTitle = existingUser?.jobTitle || mockRecord?.jobTitle || 'الشؤون التعليمية';
+      const phone = existingUser?.phone || mockRecord?.phone || '';
+
+      setFetchedEmployee({
+        civilId: idClean,
+        name,
+        workEntity,
+        jobTitle,
+        phone
+      });
+
+      setEmployeeMode('register_step2');
+    } finally {
+      setIsLoading(false);
     }
-
-    const name = existingUser?.name || mockRecord?.name || `منسوب تعليم (${idClean.slice(-4)})`;
-    const workEntity = existingUser?.workEntity || mockRecord?.workEntity || 'الشؤون التعليمية';
-    const jobTitle = existingUser?.jobTitle || mockRecord?.jobTitle || 'الشؤون التعليمية';
-    const phone = existingUser?.phone || mockRecord?.phone || '';
-
-    setFetchedEmployee({
-      civilId: idClean,
-      name,
-      workEntity,
-      jobTitle,
-      phone
-    });
-
-    setEmployeeMode('register_step2');
   };
 
   // Step 2: Confirm fetched details
@@ -232,7 +433,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
   };
 
   // Step 3: Password creation (Username = Civil ID)
-  const handleFinalRegistration = (e: React.FormEvent) => {
+  const handleFinalRegistration = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -248,48 +449,57 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
 
     if (!fetchedEmployee) return;
 
-    const users = getMockUsers();
-    const existingIndex = users.findIndex(u => u.civilId === fetchedEmployee.civilId);
+    setIsLoading(true);
+    try {
+      const cleanId = normalizeCivilId(fetchedEmployee.civilId);
+      const users = await syncUsersWithCloud();
+      const existingIndex = users.findIndex(u => normalizeCivilId(u.civilId) === cleanId);
 
-    let finalUser: User;
+      let finalUser: User;
 
-    if (existingIndex >= 0) {
-      const existingUser = users[existingIndex];
-      finalUser = {
-        ...existingUser,
-        password: newPassword,
-        name: fetchedEmployee.name || existingUser.name,
-        workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
-        jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
-        phone: fetchedEmployee.phone || existingUser.phone,
-        status: 'active'
-      };
-      users[existingIndex] = finalUser;
-      saveMockUsers(users);
-    } else {
-      finalUser = {
-        id: `emp-${fetchedEmployee.civilId}`,
-        civilId: fetchedEmployee.civilId,
-        name: fetchedEmployee.name,
-        password: newPassword,
-        role: 'user',
-        userType: 'employee',
-        workEntity: fetchedEmployee.workEntity,
-        jobTitle: fetchedEmployee.jobTitle,
-        phone: fetchedEmployee.phone,
-        status: 'active',
-        permissions: {
-          visibleLayers: ['schools', 'kmz'],
-          canViewCoordinates: true,
-          canExportReports: true,
-          canUseSurroundingAnalysis: true
-        },
-        createdAt: new Date().toISOString()
-      };
-      saveMockUsers([...users, finalUser]);
+      if (existingIndex >= 0) {
+        const existingUser = users[existingIndex];
+        finalUser = {
+          ...existingUser,
+          civilId: cleanId,
+          password: newPassword,
+          name: fetchedEmployee.name || existingUser.name,
+          workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
+          jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
+          phone: fetchedEmployee.phone || existingUser.phone,
+          status: 'active'
+        };
+        users[existingIndex] = finalUser;
+        saveMockUsers(users);
+      } else {
+        finalUser = {
+          id: `emp-${cleanId}`,
+          civilId: cleanId,
+          name: fetchedEmployee.name,
+          password: newPassword,
+          role: 'user',
+          userType: 'employee',
+          workEntity: fetchedEmployee.workEntity,
+          jobTitle: fetchedEmployee.jobTitle,
+          phone: fetchedEmployee.phone,
+          status: 'active',
+          permissions: {
+            visibleLayers: ['schools', 'kmz'],
+            canViewCoordinates: true,
+            canExportReports: true,
+            canUseSurroundingAnalysis: true
+          },
+          createdAt: new Date().toISOString()
+        };
+        saveMockUsers([...users, finalUser]);
+      }
+
+      unmarkUserDeletedLocally(finalUser.id, finalUser.civilId);
+      await upsertUserToSupabase(finalUser).catch(err => console.warn("Cloud registration sync warning:", err));
+      onLoginSuccess(finalUser);
+    } finally {
+      setIsLoading(false);
     }
-
-    onLoginSuccess(finalUser);
   };
 
   return (

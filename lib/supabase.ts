@@ -398,38 +398,112 @@ export async function deleteFeedbackFromSupabase(feedbackId: string): Promise<bo
 }
 
 // ----------------------------------------------------
-// Users Operations
+// Users Operations & Normalization
 // ----------------------------------------------------
+
+/**
+ * Normalizes Civil ID or numeric strings:
+ * - Converts Arabic-Indic (٠-٩) and Eastern/Persian (۰-۹) digits to English ASCII (0-9)
+ * - Removes spaces, dashes, and invisible directional characters
+ */
+export function normalizeCivilId(input: string | undefined | null): string {
+  if (!input) return '';
+  return String(input)
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF\s\-_]/g, '')
+    .trim();
+}
+
+function mapSupabaseRowToUser(item: any): User {
+  const rawPerms = item.permissions && typeof item.permissions === 'object' ? item.permissions : {};
+  const cleanCivilId = normalizeCivilId(item.civil_id || rawPerms._civilId || '');
+  const extractedPassword = rawPerms._password ?? rawPerms.password ?? item.password ?? '';
+  const extractedEmail = rawPerms._email ?? rawPerms.email ?? item.email ?? undefined;
+
+  return {
+    id: String(item.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`)),
+    civilId: cleanCivilId,
+    name: (item.name || '').trim(),
+    password: extractedPassword ? String(extractedPassword) : '',
+    email: extractedEmail ? String(extractedEmail) : undefined,
+    role: (item.role === 'admin' ? 'admin' : 'user'),
+    userType: (item.user_type || 'employee') as any,
+    workEntity: item.work_entity || 'الشؤون التعليمية',
+    jobTitle: item.job_title || 'الشؤون التعليمية',
+    phone: item.phone || '',
+    status: (item.status === 'disabled' ? 'disabled' : 'active'),
+    permissions: {
+      visibleLayers: Array.isArray(rawPerms.visibleLayers) ? rawPerms.visibleLayers : ['schools', 'kmz'],
+      canViewCoordinates: rawPerms.canViewCoordinates !== false,
+      canExportReports: rawPerms.canExportReports !== false,
+      canUseSurroundingAnalysis: rawPerms.canUseSurroundingAnalysis !== false
+    },
+    createdAt: item.created_at || new Date().toISOString()
+  };
+}
 
 export async function fetchUsersFromSupabase(): Promise<User[] | null> {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
   try {
-    const { data, error } = await supabase.from('users').select('*');
-    if (error) throw error;
-    if (!data || data.length === 0) return null;
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-    return data.map(item => ({
-      id: item.id,
-      civilId: item.civil_id,
-      name: item.name,
-      role: item.role as any,
-      userType: item.user_type as any,
-      workEntity: item.work_entity,
-      jobTitle: item.job_title,
-      phone: item.phone,
-      status: item.status as any,
-      permissions: item.permissions || {
-        visibleLayers: ['schools', 'kmz'],
-        canViewCoordinates: true,
-        canExportReports: true,
-        canUseSurroundingAnalysis: true
-      },
-      createdAt: item.created_at
-    }));
+    if (error) throw error;
+    if (!data) return [];
+
+    // Deduplicate by normalized civilId (keep most recent / one with password)
+    const byKey = new Map<string, User>();
+    for (const row of data) {
+      const u = mapSupabaseRowToUser(row);
+      const key = u.civilId || u.id;
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, u);
+      } else if (!existing.password && u.password) {
+        byKey.set(key, { ...existing, password: u.password });
+      }
+    }
+
+    return Array.from(byKey.values());
   } catch (err) {
     console.warn("Supabase fetchUsers error:", err);
+    return null;
+  }
+}
+
+export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<User | null> {
+  const supabase = getSupabaseClient();
+  const cleanId = normalizeCivilId(civilId);
+  if (!supabase || !cleanId) return null;
+
+  try {
+    // 1. Direct query on civil_id or id
+    const { data: directData, error: directErr } = await supabase
+      .from('users')
+      .select('*')
+      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId}`);
+
+    if (!directErr && directData && directData.length > 0) {
+      // Prefer a record that has a password set if multiple exist
+      const mapped = directData.map(mapSupabaseRowToUser);
+      return mapped.find(u => Boolean(u.password)) || mapped[0];
+    }
+
+    // 2. Fallback: fetch all users and match after normalizing civil_id (handles any legacy non-normalized rows)
+    const allUsers = await fetchUsersFromSupabase();
+    if (allUsers && allUsers.length > 0) {
+      const matched = allUsers.find(u => normalizeCivilId(u.civilId) === cleanId);
+      if (matched) return matched;
+    }
+
+    return null;
+  } catch (err) {
+    console.warn("Supabase fetchUserByCivilId error:", err);
     return null;
   }
 }
@@ -439,17 +513,53 @@ export async function upsertUserToSupabase(user: User): Promise<boolean> {
   if (!supabase) return false;
 
   try {
+    const cleanCivilId = normalizeCivilId(user.civilId || '');
+    const canonicalId = user.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`);
+
+    // If a record already exists in Supabase with this civil_id, preserve its password if the incoming user has an empty password
+    let passwordToSave = user.password || '';
+    let emailToSave = user.email || '';
+
+    if (cleanCivilId && !passwordToSave) {
+      const { data: existingRows } = await supabase
+        .from('users')
+        .select('*')
+        .eq('civil_id', cleanCivilId);
+
+      if (existingRows && existingRows.length > 0) {
+        for (const r of existingRows) {
+          const mapped = mapSupabaseRowToUser(r);
+          if (mapped.password && !passwordToSave) passwordToSave = mapped.password;
+          if (mapped.email && !emailToSave) emailToSave = mapped.email;
+          // Remove duplicate row if it had a different ID
+          if (r.id !== canonicalId) {
+            await supabase.from('users').delete().eq('id', r.id);
+          }
+        }
+      }
+    }
+
+    const permissionsPayload = {
+      visibleLayers: user.permissions?.visibleLayers || ['schools', 'kmz'],
+      canViewCoordinates: user.permissions?.canViewCoordinates !== false,
+      canExportReports: user.permissions?.canExportReports !== false,
+      canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false,
+      _password: passwordToSave,
+      _email: emailToSave,
+      _civilId: cleanCivilId
+    };
+
     const payload = {
-      id: user.id,
-      civil_id: user.civilId || null,
-      name: user.name,
-      role: user.role,
+      id: canonicalId,
+      civil_id: cleanCivilId || null,
+      name: (user.name || '').trim(),
+      role: user.role || 'user',
       user_type: user.userType || 'employee',
-      work_entity: user.workEntity || null,
-      job_title: user.jobTitle || null,
-      phone: user.phone || null,
+      work_entity: user.workEntity || 'الشؤون التعليمية',
+      job_title: user.jobTitle || 'الشؤون التعليمية',
+      phone: user.phone ? normalizeCivilId(user.phone) || user.phone.trim() : null,
       status: user.status || 'active',
-      permissions: user.permissions || null
+      permissions: permissionsPayload
     };
 
     const { error } = await supabase.from('users').upsert(payload, { onConflict: 'id' });
@@ -461,17 +571,48 @@ export async function upsertUserToSupabase(user: User): Promise<boolean> {
   }
 }
 
-export async function deleteUserFromSupabase(userId: string): Promise<boolean> {
+export async function deleteUserFromSupabase(userId: string, civilId?: string): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (!supabase) return false;
 
   try {
     const { error } = await supabase.from('users').delete().eq('id', userId);
     if (error) throw error;
+
+    const cleanCivilId = normalizeCivilId(civilId);
+    if (cleanCivilId) {
+      await supabase.from('users').delete().eq('civil_id', cleanCivilId);
+    }
     return true;
   } catch (err) {
     console.error("Supabase deleteUser error:", err);
     throw err;
+  }
+}
+
+export function subscribeToUsersChanges(onChanged: () => void): () => void {
+  const supabase = getSupabaseClient();
+  if (!supabase) return () => {};
+
+  try {
+    const channel = supabase
+      .channel('users-db-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        () => {
+          console.log(">>> [REALTIME] Supabase users table changed! Refreshing users...");
+          onChanged();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (e) {
+    console.warn("Users realtime subscription setup failed:", e);
+    return () => {};
   }
 }
 

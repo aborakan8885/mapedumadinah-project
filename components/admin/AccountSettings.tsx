@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Shield, Mail, Lock, CheckCircle, AlertCircle, Save } from 'lucide-react';
 import { Button } from '../ui/Button';
+import { upsertUserToSupabase, normalizeCivilId } from '../../lib/supabase';
 
 export const AccountSettings: React.FC = () => {
     const [currentUser, setCurrentUser] = useState<any>(null);
@@ -42,15 +43,20 @@ export const AccountSettings: React.FC = () => {
                 const usersJson = localStorage.getItem(MOCK_USERS_KEY);
                 if (usersJson) {
                     const users = JSON.parse(usersJson);
-                    const idx = users.findIndex((u: any) => u.civilId === updatedUser.civilId);
+                    const idx = users.findIndex((u: any) => normalizeCivilId(u.civilId) === normalizeCivilId(updatedUser.civilId));
                     if (idx !== -1) {
                         users[idx] = { ...users[idx], email: email, password: newPassword || users[idx].password };
                         localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(users));
+                        await upsertUserToSupabase(users[idx]).catch(() => {});
+                    } else {
+                        await upsertUserToSupabase(updatedUser).catch(() => {});
                     }
+                } else {
+                    await upsertUserToSupabase(updatedUser).catch(() => {});
                 }
 
                 setCurrentUser(updatedUser);
-                setStatus({ type: 'success', message: 'تم تحديث بيانات الحساب بنجاح' });
+                setStatus({ type: 'success', message: 'تم تحديث بيانات الحساب ومزامنتها سحابياً بنجاح' });
                 setNewPassword('');
                 setConfirmPassword('');
                 

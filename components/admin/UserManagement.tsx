@@ -1,16 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import { User as UserIcon, Trash2, UserPlus, ShieldCheck, ShieldAlert, Key, CheckCircle2, XCircle, Search, Edit3, Settings2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { User as UserIcon, Trash2, UserPlus, ShieldCheck, ShieldAlert, Key, CheckCircle2, XCircle, Search, Edit3, Settings2, Cloud, RefreshCw, Loader2 } from 'lucide-react';
 import type { User } from '../../types';
 import { Button } from '../ui/Button';
 import { ConfirmationModal } from '../modals/ConfirmationModal';
-import { getMockUsers, saveMockUsers } from '../modals/AuthModal';
+import {
+    getMockUsers,
+    saveMockUsers,
+    syncUsersWithCloud,
+    markUserDeletedLocally,
+    unmarkUserDeletedLocally
+} from '../modals/AuthModal';
+import {
+    upsertUserToSupabase,
+    deleteUserFromSupabase,
+    normalizeCivilId,
+    subscribeToUsersChanges
+} from '../../lib/supabase';
 
 const UserManagement: React.FC = () => {
-    const [users, setUsers] = useState<User[]>([]);
+    const [users, setUsers] = useState<User[]>(() => getMockUsers());
     const [searchQuery, setSearchQuery] = useState('');
     const [userToDelete, setUserToDelete] = useState<User | null>(null);
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [syncNotice, setSyncNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
     // Form state for adding/editing user
     const [formCivilId, setFormCivilId] = useState('');
@@ -27,32 +42,80 @@ const UserManagement: React.FC = () => {
     const [permExportReports, setPermExportReports] = useState(true);
     const [permSurrounding, setPermSurrounding] = useState(true);
 
-    useEffect(() => {
-        setUsers(getMockUsers());
+    const refreshAndSyncUsers = useCallback(async (showFeedback = false) => {
+        setIsSyncing(true);
+        try {
+            const synced = await syncUsersWithCloud();
+            setUsers(synced);
+            if (showFeedback) {
+                setSyncNotice({
+                    type: 'success',
+                    message: `تمت مزامنة جميع المستخدمين (${synced.length} حساب) مع قاعدة البيانات السحابية بنجاح.`
+                });
+                setTimeout(() => setSyncNotice(null), 4000);
+            }
+        } catch (err) {
+            console.error("Failed to sync users:", err);
+            if (showFeedback) {
+                setSyncNotice({
+                    type: 'error',
+                    message: 'تعذر الاتصال بالسحابة حالياً، تم عرض النسخة المحفوظة.'
+                });
+            }
+        } finally {
+            setIsSyncing(false);
+        }
     }, []);
 
-    const refreshUsers = () => {
-        setUsers(getMockUsers());
-    };
-
-    const handleToggleStatus = (targetUser: User) => {
-        const newStatus: 'active' | 'disabled' = targetUser.status === 'disabled' ? 'active' : 'disabled';
-        const updatedUsers = users.map(u => {
-            if (u.id === targetUser.id) {
-                return { ...u, status: newStatus };
-            }
-            return u;
+    useEffect(() => {
+        refreshAndSyncUsers(false);
+        const unsubscribe = subscribeToUsersChanges(() => {
+            refreshAndSyncUsers(false);
         });
+        return () => {
+            unsubscribe();
+        };
+    }, [refreshAndSyncUsers]);
+
+    const handleToggleStatus = async (targetUser: User) => {
+        const newStatus: 'active' | 'disabled' = targetUser.status === 'disabled' ? 'active' : 'disabled';
+        const updatedTarget: User = { ...targetUser, status: newStatus };
+        const updatedUsers = users.map(u => (u.id === targetUser.id ? updatedTarget : u));
         saveMockUsers(updatedUsers);
         setUsers(updatedUsers);
+
+        try {
+            await upsertUserToSupabase(updatedTarget);
+            setSyncNotice({
+                type: 'success',
+                message: `تم تحديث حالة دخول "${targetUser.name}" ومزامنتها سحابياً.`
+            });
+            setTimeout(() => setSyncNotice(null), 3500);
+        } catch (err) {
+            console.error("Cloud status toggle error:", err);
+        }
     };
 
-    const handleDeleteConfirm = () => {
+    const handleDeleteConfirm = async () => {
         if (!userToDelete) return;
-        const updatedUsers = users.filter(u => u.id !== userToDelete.id);
+        const target = userToDelete;
+        setUserToDelete(null);
+
+        markUserDeletedLocally(target.id, target.civilId);
+        const updatedUsers = users.filter(u => u.id !== target.id && normalizeCivilId(u.civilId) !== normalizeCivilId(target.civilId));
         saveMockUsers(updatedUsers);
         setUsers(updatedUsers);
-        setUserToDelete(null);
+
+        try {
+            await deleteUserFromSupabase(target.id, target.civilId);
+            setSyncNotice({
+                type: 'success',
+                message: `تم حذف حساب "${target.name}" نهائياً من النظام والسحابة.`
+            });
+            setTimeout(() => setSyncNotice(null), 3500);
+        } catch (err) {
+            console.error("Cloud delete error:", err);
+        }
     };
 
     const openAddModal = () => {
@@ -73,7 +136,7 @@ const UserManagement: React.FC = () => {
 
     const openEditModal = (user: User) => {
         setEditingUser(user);
-        setFormCivilId(user.civilId || '');
+        setFormCivilId(normalizeCivilId(user.civilId) || user.civilId || '');
         setFormName(user.name);
         setFormWorkEntity(user.workEntity || 'الشؤون التعليمية');
         setFormJobTitle(user.jobTitle || 'الشؤون التعليمية');
@@ -87,68 +150,95 @@ const UserManagement: React.FC = () => {
         setIsAddModalOpen(true);
     };
 
-    const handleSaveUser = (e: React.FormEvent) => {
+    const handleSaveUser = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!formName.trim()) return;
+        const cleanName = formName.trim();
+        const cleanCivilId = normalizeCivilId(formCivilId);
+        if (!cleanName || !cleanCivilId) return;
 
-        const permissions = {
-            visibleLayers: ['schools', 'kmz'] as any,
-            canViewCoordinates: permViewCoords,
-            canExportReports: permExportReports,
-            canUseSurroundingAnalysis: permSurrounding
-        };
-
-        if (editingUser) {
-            // Update existing
-            const updatedUsers = users.map(u => {
-                if (u.id === editingUser.id) {
-                    return {
-                        ...u,
-                        civilId: formCivilId,
-                        name: formName,
-                        workEntity: formWorkEntity,
-                        jobTitle: formJobTitle,
-                        phone: formPhone,
-                        role: formRole,
-                        userType: 'employee' as const,
-                        status: formStatus,
-                        permissions
-                    };
-                }
-                return u;
-            });
-            saveMockUsers(updatedUsers);
-            setUsers(updatedUsers);
-        } else {
-            // Add new user
-            const newUser: User = {
-                id: `emp-${formCivilId || Date.now()}`,
-                civilId: formCivilId || `${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-                name: formName,
-                password: '',
-                role: formRole,
-                userType: 'employee',
-                workEntity: formWorkEntity || 'الشؤون التعليمية',
-                jobTitle: formJobTitle || 'الشؤون التعليمية',
-                phone: formPhone,
-                status: formStatus,
-                permissions,
-                createdAt: new Date().toISOString()
+        setIsSaving(true);
+        try {
+            const permissions = {
+                visibleLayers: ['schools', 'kmz'] as any,
+                canViewCoordinates: permViewCoords,
+                canExportReports: permExportReports,
+                canUseSurroundingAnalysis: permSurrounding
             };
-            const updatedUsers = [...users, newUser];
+
+            let savedUser: User;
+            let updatedUsers: User[];
+
+            // Check if editing or if a user with the same civilId already exists
+            const existingByCivilId = users.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
+            const targetExisting = editingUser || existingByCivilId;
+
+            if (targetExisting) {
+                savedUser = {
+                    ...targetExisting,
+                    id: targetExisting.id || `emp-${cleanCivilId}`,
+                    civilId: cleanCivilId,
+                    name: cleanName,
+                    workEntity: formWorkEntity || 'الشؤون التعليمية',
+                    jobTitle: formJobTitle || 'الشؤون التعليمية',
+                    phone: normalizeCivilId(formPhone) || formPhone.trim(),
+                    password: formPassword.trim() ? formPassword.trim() : (targetExisting.password || ''),
+                    role: formRole,
+                    userType: 'employee' as const,
+                    status: formStatus,
+                    permissions
+                };
+                updatedUsers = users.map(u =>
+                    (u.id === targetExisting.id || normalizeCivilId(u.civilId) === cleanCivilId) ? savedUser : u
+                );
+            } else {
+                savedUser = {
+                    id: `emp-${cleanCivilId}`,
+                    civilId: cleanCivilId,
+                    name: cleanName,
+                    password: formPassword.trim() || '',
+                    role: formRole,
+                    userType: 'employee',
+                    workEntity: formWorkEntity || 'الشؤون التعليمية',
+                    jobTitle: formJobTitle || 'الشؤون التعليمية',
+                    phone: normalizeCivilId(formPhone) || formPhone.trim(),
+                    status: formStatus,
+                    permissions,
+                    createdAt: new Date().toISOString()
+                };
+                updatedUsers = [savedUser, ...users];
+            }
+
+            unmarkUserDeletedLocally(savedUser.id, savedUser.civilId);
             saveMockUsers(updatedUsers);
             setUsers(updatedUsers);
-        }
 
-        setIsAddModalOpen(false);
+            await upsertUserToSupabase(savedUser);
+
+            setIsAddModalOpen(false);
+            setSyncNotice({
+                type: 'success',
+                message: `تم حفظ حساب "${savedUser.name}" (سجل: ${savedUser.civilId}) ومزامنته سحابياً بنجاح. يمكنه الآن استدعاء بياناته من أي جهاز.`
+            });
+            setTimeout(() => setSyncNotice(null), 5000);
+        } catch (err: any) {
+            console.error("Failed to save user to cloud:", err);
+            setIsAddModalOpen(false);
+            setSyncNotice({
+                type: 'error',
+                message: `تم حفظ المستخدم محلياً ولكن تعذرت المزامنة السحابية: ${err?.message || 'خطأ في الاتصال'}`
+            });
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     const filteredUsers = users.filter(u => {
         const q = searchQuery.toLowerCase().trim();
+        const qNorm = normalizeCivilId(q);
         if (!q) return true;
         return (
             u.name.toLowerCase().includes(q) ||
-            (u.civilId && u.civilId.includes(q)) ||
+            (u.civilId && (u.civilId.includes(q) || (qNorm && normalizeCivilId(u.civilId).includes(qNorm)))) ||
             (u.workEntity && u.workEntity.toLowerCase().includes(q)) ||
             (u.jobTitle && u.jobTitle.toLowerCase().includes(q))
         );
@@ -166,14 +256,38 @@ const UserManagement: React.FC = () => {
                         <UserIcon className="h-5 w-5 text-primary-medium" />
                         <span>إدارة المستخدمين ومنح الصلاحيات</span>
                     </h3>
-                    <p className="text-fluid-xs text-slate-500 mt-0.5">التحكم الكامل بالحسابات، تفعيل وتعطيل الدخول، وتحديد صلاحيات الإحداثيات والتقارير</p>
+                    <p className="text-fluid-xs text-slate-500 mt-0.5">التحكم الكامل بالحسابات، المزامنة السحابية الفورية، وتحديد صلاحيات الإحداثيات والتقارير</p>
                 </div>
 
-                <Button onClick={openAddModal} className="bg-primary-dark hover:bg-primary-medium text-white font-bold rounded-xl gap-2 shadow-xs text-fluid-xs">
-                    <UserPlus className="h-4 w-4" />
-                    إضافة مستخدم جديد
-                </Button>
+                <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={isSyncing}
+                        onClick={() => refreshAndSyncUsers(true)}
+                        className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold rounded-xl gap-1.5 text-fluid-xs"
+                    >
+                        <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                        <span>{isSyncing ? 'جاري المزامنة...' : 'مزامنة سحابية'}</span>
+                    </Button>
+
+                    <Button onClick={openAddModal} className="bg-primary-dark hover:bg-primary-medium text-white font-bold rounded-xl gap-2 shadow-xs text-fluid-xs">
+                        <UserPlus className="h-4 w-4" />
+                        إضافة مستخدم جديد
+                    </Button>
+                </div>
             </div>
+
+            {syncNotice && (
+                <div className={`p-3.5 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                    syncNotice.type === 'success'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                }`}>
+                    <Cloud className="h-4 w-4 shrink-0" />
+                    <span>{syncNotice.message}</span>
+                </div>
+            )}
 
             {/* Quick Stats Bar & Search */}
             <div className="ds-grid-auto-fit">
@@ -351,11 +465,12 @@ const UserManagement: React.FC = () => {
                                     <label className="block text-xs font-bold text-gray-700 mb-1">رقم السجل المدني</label>
                                     <input
                                         type="text"
+                                        inputMode="numeric"
                                         value={formCivilId}
-                                        onChange={e => setFormCivilId(e.target.value)}
+                                        onChange={e => setFormCivilId(normalizeCivilId(e.target.value))}
                                         placeholder="10 أرقام"
                                         className="w-full px-3 py-2 border rounded-xl text-xs font-mono font-bold"
-                                        maxLength={10}
+                                        maxLength={15}
                                         required
                                     />
                                 </div>
@@ -416,7 +531,7 @@ const UserManagement: React.FC = () => {
                             </div>
 
                             <div className="p-2.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[11px] text-emerald-900 font-medium">
-                                ℹ️ <strong>ملاحظة:</strong> لا توجد كلمة مرور يتم إدخالها من هنا. يقوم منسوب الإدارة بإنشاء كلمة المرور الجديدة بنفسه عند التسجيل وتأكيد البيانات برقم السجل المدني.
+                                ℹ️ <strong>ملاحظة:</strong> يتم حفظ هذا المستخدم سحابياً فوراً. يقوم منسوب الإدارة بكتابة رقم سجله المدني والضغط على <strong>استدعاء البيانات</strong> لإنشاء كلمة المرور الخاصة به من أي جهاز.
                             </div>
 
                             <div className="pt-2">
@@ -467,8 +582,9 @@ const UserManagement: React.FC = () => {
                             </div>
 
                             <div className="flex gap-2 pt-3">
-                                <Button type="submit" className="flex-1 py-2 bg-primary-dark text-white font-bold rounded-xl">
-                                    حفظ البيانات والصلاحيات
+                                <Button type="submit" disabled={isSaving} className="flex-1 py-2 bg-primary-dark text-white font-bold rounded-xl flex items-center justify-center gap-2">
+                                    {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                                    <span>{isSaving ? 'جاري الحفظ والمزامنة سحابياً...' : 'حفظ البيانات والصلاحيات'}</span>
                                 </Button>
                                 <Button type="button" variant="secondary" onClick={() => setIsAddModalOpen(false)} className="py-2 rounded-xl">
                                     إلغاء
