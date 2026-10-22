@@ -1,0 +1,974 @@
+التقرير الشامل لمراجعة كود "الخارطة التعليمية للقبول"
+نسخة موحّدة قابلة للنسخ دفعة واحدة
+طريقة الاستخدام: انسخ هذه الصفحة كاملة، وسيحتوي كل بند على: (1) المشكلة، (2) الكود الخطأ، (3) شرح الحل، (4) الكود المصحح. البنود مرتبة حسب الأولوية: Critical → High → Medium → Quality.
+
+🔴 المستوى الأول: ثغرات حرجة (Critical)
+❌ المشكلة رقم 1: استعادة كلمة المرور بدون أي تحقق — الاستيلاء على الحسابات (Account Takeover)
+📌 المشكلة:
+في دالة handleCivilIdFetch بصفحة "تفعيل حساب جديد"، يُسمح لأي زائر بإدخال أي رقم سجل مدني، ثم يُسمح له بتعيين كلمة مرور جديدة لـ الحساب الأصلي دون تحقق من الهوية. أي شخص يعرف رقم سجل موظف يستطيع الاستيلاء على حسابه بالكامل — بما في ذلك حساب المسؤول.
+
+🔴 الكود الخطأ:
+
+typescript
+const handleCivilIdFetch = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  const idClean = normalizeCivilId(inputCivilId);
+
+  if (!idClean || idClean.length < 5) {
+    setError('الرجاء إدخال رقم السجل المدني بشكل صحيح.');
+    return;
+  }
+
+  setIsSubmitting(true);
+  try {
+    const user = await lookupUserByCivilId(idClean);
+    if (!user) { setError('❌ هذا السجل المدني غير مضاف...'); return; }
+    if (user.status === 'disabled') { setError('⚠️ الحساب معطل...'); return; }
+    setFetchedEmployee(user);
+    setEmployeeMode('register_step2'); // ⚠️ يتخطى التحقق من كلمة المرور
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
+const handleFinalRegistration = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!newPassword || newPassword.length < 4) { setError('...'); return; }
+  if (newPassword !== confirmPassword) { setError('...'); return; }
+  if (!fetchedEmployee) return;
+
+  setIsSubmitting(true);
+  try {
+    const updatedUser: User = { ...fetchedEmployee, password: newPassword, status: 'active' };
+    const allUsers = getLocalUsers();
+    const updatedList = [updatedUser, ...allUsers.filter((u) => u.id !== updatedUser.id && normalizeCivilId(u.civilId) !== normalizeCivilId(updatedUser.civilId))];
+    saveLocalUsers(updatedList);
+    await saveUserToCloud(updatedUser); // ⚠️ يستبدل كلمة المرور القديمة
+    onLoginSuccess(updatedUser);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+✅ شرح الحل:
+لا تسمح بتعيين كلمة المرور إلا في حالتين: (1) أن كلمة المرور الأصلية فارغة تماماً (حساب جديد أنشأه المسؤول ولم يُستخدم)، أو (2) أن يمر المستخدم بعملية إعادة تعيين آمنة من المسؤول. احجب أي محاولة استعادة كلمة مرور على حساب مفعّل مسبقاً، وأضف زر "إعادة تعيين" في لوحة التحكم للمسؤولين فقط.
+
+✅ الكود المصحح:
+
+typescript
+const handleCivilIdFetch = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  const idClean = normalizeCivilId(inputCivilId);
+
+  if (!idClean || idClean.length < 10) {
+    setError('الرجاء إدخال رقم سجل مدني صحيح (10 أرقام).');
+    return;
+  }
+
+  setIsSubmitting(true);
+  try {
+    const user = await lookupUserByCivilId(idClean);
+
+    if (!user) {
+      setError('تعذر التحقق من البيانات. يرجى مراجعة المسؤول.');
+      return;
+    }
+
+    if (user.status === 'disabled') {
+      setError('الحساب معطل حالياً بواسطة مسؤول النظام.');
+      return;
+    }
+
+    // 🔒 القفل الأمني: لا تسمح بالتفعيل إلا إذا لم تُعيَّن كلمة مرور بعد
+    if (user.password && user.password.length > 0) {
+      setError('هذا الحساب مفعّل بكلمة مرور مسبقاً. إن نسيت كلمة المرور فتواصل مع المسؤول.');
+      return;
+    }
+
+    setFetchedEmployee(user);
+    setEmployeeMode('register_step2');
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
+// ✅ في لوحة التحكم: زر إعادة تعيين كلمة المرور للمسؤول فقط
+const handleResetPassword = async (target: User) => {
+  if (!window.confirm(`إعادة تعيين كلمة المرور للمستخدم: ${target.name}؟`)) return;
+  const updated: User = { ...target, password: '' };
+  await saveUserToCloud(updated);
+  const next = users.map((u) => (u.id === target.id ? updated : u));
+  saveLocalUsers(next);
+  setUsers(next);
+  setSyncMessage(`تم إعادة تعيين كلمة المرور لـ ${target.name}.`);
+};
+❌ المشكلة رقم 2: كلمة مرور المسؤول مكتوبة كنص صريح داخل الكود المصدري
+📌 المشكلة:
+كلمة مرور المسؤول salim123321rs&1 مكتوبة في INITIAL_SYSTEM_USERS وفي شرط handleEmployeeLogin. أي مستخدم يستطيع فتح View Source ورؤية الكلمة.
+
+🔴 الكود الخطأ:
+
+typescript
+export const INITIAL_SYSTEM_USERS: User[] = [
+  {
+    id: 'admin-1068575628',
+    civilId: '1068575628',
+    name: 'مدير النظام الرئيسي',
+    password: 'salim123321rs&1', // ⚠️ نص صريح في الكود
+    // ...
+  },
+];
+
+// داخل handleEmployeeLogin:
+if (idClean === '1068575628' && pwdClean === 'salim123321rs&1') {
+  const adminUser: User = { id: 'admin-1068575628', /* ... */ };
+  onLoginSuccess(adminUser);
+  return;
+}
+✅ شرح الحل:
+احذف الاعتماد المضمّن بالكامل. انتقل إلى نظام مصادقة حقيقي (Supabase Auth أو OTP)، ولا تخزّن أي كلمة مرور في الكود المصدري. إذا استُخدم جدول users مؤقتاً، فليكن الاعتماد على هاش bcrypt وليس نصاً صريحاً.
+
+✅ الكود المصحح:
+
+typescript
+// ✅ احذف INITIAL_SYSTEM_USERS بالكامل من الكود
+// (المستخدمون يأتون من جدول users في Supabase فقط)
+
+const handleEmployeeLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+
+  const idClean = normalizeCivilId(civilIdLogin);
+  const pwdClean = passwordLogin.trim();
+
+  if (!idClean || !pwdClean) {
+    setError('الرجاء إدخال رقم السجل المدني وكلمة المرور.');
+    return;
+  }
+
+  setIsSubmitting(true);
+  try {
+    const user = await lookupUserByCivilId(idClean);
+    if (!user) {
+      setError('بيانات الدخول غير صحيحة.'); // رسالة موحدة (نقطة 8)
+      return;
+    }
+
+    if (user.status === 'disabled') {
+      setError('الحساب معطل. يرجى التواصل مع الإدارة.');
+      return;
+    }
+
+    const ok = await verifyPassword(pwdClean, user.password || '');
+    if (!ok) {
+      setError('بيانات الدخول غير صحيحة.');
+      return;
+    }
+
+    onLoginSuccess(user);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
+// دالة التحقق (يُستبدل محتواها بـ bcrypt.compare عبر Edge Function لاحقاً)
+async function verifyPassword(plain: string, stored: string): Promise<boolean> {
+  return stored === plain;
+}
+❌ المشكلة رقم 3: كلمات المرور مخزّنة كنص صريح في localStorage
+📌 المشكلة:
+saveLocalUsers تخزّن المستخدمين كاملين — بما فيهم كلمة المرور — في localStorage. أي ثغرة XSS بسيطة تستطيع سرقة جميع كلمات المرور (بما فيها كلمة المسؤول) عبر localStorage.getItem('educational_map_users').
+
+🔴 الكود الخطأ:
+
+typescript
+export function saveLocalUsers(users: User[]) {
+  try {
+    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(users)); // ⚠️ يحفظ كلمة المرور
+  } catch (e) {
+    console.error('Local save error', e);
+  }
+}
+
+export function getLocalUsers(): User[] {
+  try {
+    const raw = localStorage.getItem(MOCK_USERS_KEY);
+    if (!raw) {
+      localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(INITIAL_SYSTEM_USERS));
+      return INITIAL_SYSTEM_USERS;
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_SYSTEM_USERS;
+  } catch {
+    return INITIAL_SYSTEM_USERS;
+  }
+}
+✅ شرح الحل:
+افصل كائن المستخدم عن بيانات الاعتماد. احفظ فقط { id, name, role, permissions } (Session Payload آمن) في localStorage، ولا تحفظ password أبداً. أضف CSP صارم لتقليل احتمال XSS أصلاً.
+
+✅ الكود المصحح:
+
+typescript
+type SafeUser = Omit<User, 'password'>;
+
+export function saveLocalUsers(users: SafeUser[]) {
+  try {
+    const safe = users.map(({ password, ...rest }) => rest);
+    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(safe));
+  } catch (e) {
+    console.error('Local save error', e);
+  }
+}
+
+export function getLocalUsers(): SafeUser[] {
+  try {
+    const raw = localStorage.getItem(MOCK_USERS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // تنظيف أي كلمات مرور قديمة تسرّبت سابقاً
+    return parsed.map(({ password, ...rest }: any) => rest);
+  } catch {
+    return [];
+  }
+}
+ملاحظة: أضف على الخادم رأس CSP:
+
+text
+Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self';
+❌ المشكلة رقم 4: كلمة المرور مخزّنة داخل حقل permissions._password في قاعدة البيانات
+📌 المشكلة:
+في saveUserToCloud، تُحقن كلمة المرور داخل كائن permissions (JSON). هذا يعني أنها موجودة نصاً صريحاً في عمود permissions بجدول users وأيضاً في جدول النسخ الاحتياطي educational_files. أي شخص يملك anon key يستطيع قراءتها إن لم يكن RLS مفعّلاً.
+
+🔴 الكود الخطأ:
+
+typescript
+const payload = {
+  id: canonicalId,
+  civil_id: cleanId || null,
+  name: user.name.trim(),
+  role: user.role,
+  user_type: user.userType || 'employee',
+  work_entity: user.workEntity || 'الشؤون التعليمية',
+  job_title: user.jobTitle || 'الشؤون التعليمية',
+  phone: user.phone ? normalizeCivilId(user.phone) : null,
+  status: user.status || 'active',
+  permissions: {
+    ...user.permissions,
+    _password: user.password || '', // ⚠️ نص صريح
+    _civilId: cleanId,
+  },
+};
+✅ شرح الحل:
+احذف _password نهائياً. استخدم pgcrypto على الخادم مع عمود password_hash منفصل ومحمي بـ RLS، ومرّر تحديث كلمة المرور عبر Edge Function فقط.
+
+✅ الكود المصحح:
+
+sql
+-- على قاعدة البيانات (Supabase SQL Editor):
+ALTER TABLE public.users ADD COLUMN password_hash TEXT;
+REVOKE ALL (password_hash) ON public.users FROM anon, authenticated;
+typescript
+export async function saveUserToCloud(user: User): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (user.password && user.password.length > 0) {
+      // استدعاء Edge Function مسؤولة عن تجزئة كلمة المرور
+      const { error: pwErr } = await supabase.functions.invoke('set-user-password', {
+        body: { user_id: user.id, new_password: user.password },
+      });
+      if (pwErr) throw pwErr;
+    }
+
+    const { error } = await supabase.from('users').upsert(
+      {
+        id: user.id,
+        civil_id: normalizeCivilId(user.civilId) || null,
+        name: user.name.trim(),
+        role: user.role,
+        user_type: user.userType || 'employee',
+        work_entity: user.workEntity,
+        job_title: user.jobTitle,
+        phone: user.phone ? normalizePhone(user.phone) : null,
+        status: user.status,
+        permissions: {
+          visibleLayers: user.permissions.visibleLayers,
+          canViewCoordinates: user.permissions.canViewCoordinates,
+          canExportReports: user.permissions.canExportReports,
+          canUseSurroundingAnalysis: user.permissions.canUseSurroundingAnalysis,
+        },
+      },
+      { onConflict: 'id' }
+    );
+    if (error) throw error;
+    return { ok: true };
+  } catch (err: any) {
+    console.error('Save to cloud failed:', err);
+    return { ok: false, error: err?.message || 'خطأ غير معروف' };
+  }
+}
+❌ المشكلة رقم 5: تجاوز حالة "تعطيل الحساب" عبر مسار الاعتماد المضمّن
+📌 المشكلة:
+في handleEmployeeLogin، يُفحص شرط الاعتماد المضمّن قبل استدعاء lookupUserByCivilId. حتى لو عطّل المسؤول الحساب (status='disabled')، فإن كتابة كلمة المرور المضمّنة تمر وتنجح. تجاوز صريح لتحكم الإدارة.
+
+🔴 الكود الخطأ:
+
+typescript
+// ⚠️ الترتيب الخطر: الفحص المضمّن قبل فحص قاعدة البيانات
+if (idClean === '1068575628' && pwdClean === 'salim123321rs&1') {
+  const adminUser: User = {
+    id: 'admin-1068575628',
+    civilId: '1068575628',
+    name: 'مدير النظام الرئيسي',
+    role: 'admin',
+    // ⚠️ لا يفحص status
+  };
+  onLoginSuccess(adminUser);
+  return;
+}
+const user = await lookupUserByCivilId(idClean); // ← لم يُنفّذ أصلاً
+✅ شرح الحل:
+احذف المسار المضمّن بالكامل (كما في نقطة 2). الاعتماد فقط على قاعدة البيانات مع فحص status قبل أي تسجيل دخول.
+
+✅ الكود المصحح:
+
+typescript
+const handleEmployeeLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  const idClean = normalizeCivilId(civilIdLogin);
+  const pwdClean = passwordLogin.trim();
+
+  if (!idClean || !pwdClean) { setError('...'); return; }
+
+  setIsSubmitting(true);
+  try {
+    const user = await lookupUserByCivilId(idClean);
+    if (!user) { setError('بيانات الدخول غير صحيحة.'); return; }
+    if (user.status === 'disabled') { setError('الحساب معطل.'); return; }
+    if (!(await verifyPassword(pwdClean, user.password || ''))) {
+      setError('بيانات الدخول غير صحيحة.');
+      return;
+    }
+    onLoginSuccess(user);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+❌ المشكلة رقم 6: المستخدمون المحذوفون يعودون بعد إعادة التحميل
+📌 المشكلة:
+handleDeleteUser تحذف من جدول users فقط ولا تحذف من جدول النسخ الاحتياطي educational_files (السجل system_users_backup). لأن fetchUsersFromCloud يعيد دمج بيانات النسخة الاحتياطية كل مرة، يعود المستخدم المحذوف للظهور مباشرة.
+
+🔴 الكود الخطأ:
+
+typescript
+const handleDeleteUser = async (targetId: string) => {
+  if (!window.confirm('هل أنت متأكد؟')) return;
+  const filtered = users.filter((u) => u.id !== targetId);
+  saveLocalUsers(filtered);
+  setUsers(filtered);
+
+  try {
+    await supabase.from('users').delete().eq('id', targetId);
+    // ⚠️ نسينا system_users_backup
+  } catch (e) {
+    console.warn('Cloud delete error:', e);
+  }
+};
+✅ شرح الحل:
+احذف من جميع الأماكن: users + system_users_backup + localStorage. ثم تحقق من نجاح كل خطوة قبل الانتقال للتالية.
+
+✅ الكود المصحح:
+
+typescript
+const handleDeleteUser = async (targetId: string) => {
+  if (!window.confirm('هل أنت متأكد من حذف هذا المستخدم نهائياً من النظام والسحابة؟')) return;
+
+  const target = users.find((u) => u.id === targetId);
+
+  // 1) احذف من القائمة المحلية فوراً
+  const filtered = users.filter((u) => u.id !== targetId);
+  saveLocalUsers(filtered);
+  setUsers(filtered);
+
+  try {
+    // 2) احذف من جدول users
+    await supabase.from('users').delete().eq('id', targetId);
+
+    // 3) احذف من جدول النسخ الاحتياطي
+    const { data: backup } = await supabase
+      .from('educational_files')
+      .select('data')
+      .eq('id', 'system_users_backup')
+      .maybeSingle();
+
+    if (backup && Array.isArray(backup.data)) {
+      const targetCivilId = normalizeCivilId(target?.civilId);
+      const newBackup = backup.data.filter(
+        (b: any) => b.id !== targetId && normalizeCivilId(b.civil_id) !== targetCivilId
+      );
+      await supabase
+        .from('educational_files')
+        .upsert({ id: 'system_users_backup', data: newBackup }, { onConflict: 'id' });
+    }
+
+    setSyncMessage('✅ تم حذف المستخدم نهائياً من جميع الجداول.');
+    setTimeout(() => setSyncMessage(null), 4000);
+  } catch (err) {
+    console.error('Delete failed:', err);
+    setSyncMessage('⚠️ فشل الحذف من السحابة. يرجى إعادة المحاولة.');
+  }
+};
+❌ المشكلة رقم 7: لا يوجد RLS + الاعتماد على عميل فقط
+📌 المشكلة:
+التعليق في الكود يقول صراحةً "لضمان التخطي في حال تفعيل RLS" — أي أن الكود يفترض أن RLS غير مفعّل ويستخدم anon key للكتابة. هذا يعني أن أي شخص يملك الـ anon key (منشور في حزمة العميل) يستطيع قراءة/تعديل جدول المستخدمين ورفع نفسه إلى admin.
+
+🔴 الكود الخطأ:
+
+typescript
+// ⚠️ الكتابة المباشرة من العميل بـ anon key
+await supabase.from('users').upsert(payload, { onConflict: 'id' }).catch(() => {});
+await supabase.from('educational_files').upsert({ id: 'system_users_backup', data: backupList }, { onConflict: 'id' }).catch(() => {});
+✅ شرح الحل:
+(أ) فعّل RLS على كل الجداول. (ب) انقل عمليات CRUD الحساسة إلى Edge Functions تتحقق من الدور في الخادم وليس من العميل.
+
+✅ الكود المصحح:
+
+sql
+-- على قاعدة البيانات:
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.educational_files ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY users_select_self ON public.users
+FOR SELECT TO authenticated
+USING (
+  id = auth.uid() OR EXISTS (
+    SELECT 1 FROM public.users u WHERE u.id = auth.uid() AND u.role = 'admin'
+  )
+);
+
+CREATE POLICY users_write_admin ON public.users
+FOR ALL TO authenticated
+USING (EXISTS (SELECT 1 FROM public.users u WHERE u.id = auth.uid() AND u.role = 'admin'))
+WITH CHECK (EXISTS (SELECT 1 FROM public.users u WHERE u.id = auth.uid() AND u.role = 'admin'));
+typescript
+// ✅ العميل ينادي Edge Function فقط
+const { data, error } = await supabase.functions.invoke('admin-create-user', {
+  body: { civilId, name, role, userType, workEntity, jobTitle, phone, password },
+});
+🟠 المستوى الثاني: ثغرات عالية الخطورة (High)
+❌ المشكلة رقم 8: استنفاذ المستخدمين (User Enumeration)
+📌 المشكلة:
+رسائل الخطأ مختلفة بحسب الحالة، ما يكشف للمهاجم: هل الرقم مسجل؟ هل الحساب معطل؟ هذا يسمح بجمع قائمة أرقام السجلات المسجلة قبل الهجوم، وأيضاً يسمح بهجوم Timing Attack (زمن الاستجابة يختلف بحسب الحالة).
+
+🔴 الكود الخطأ:
+
+typescript
+if (!user) { setError('❌ هذا السجل المدني غير مضاف في قائمة المعتمدين...'); return; }
+if (user.status === 'disabled') { setError('⚠️ الحساب معطل حالياً...'); return; }
+if (user.password !== pwdClean) { setError('كلمة المرور غير صحيحة...'); return; }
+✅ شرح الحل:
+استخدم رسالة موحدة لكل حالات الفشل، وأضف تأخيراً زمنياً ثابتاً (مثلاً 800ms) لأي محاولة دخول فاشلة لمنع Timing Attack.
+
+✅ الكود المصحح:
+
+typescript
+const GENERIC_ERROR = 'بيانات الدخول غير صحيحة.';
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const handleEmployeeLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  const idClean = normalizeCivilId(civilIdLogin);
+  const pwdClean = passwordLogin.trim();
+  if (!idClean || !pwdClean) { setError('...'); return; }
+
+  setIsSubmitting(true);
+  try {
+    const start = Date.now();
+    const user = await lookupUserByCivilId(idClean);
+
+    let ok = false;
+    if (user && user.status === 'active' && user.password) {
+      ok = await verifyPassword(pwdClean, user.password);
+    }
+
+    const elapsed = Date.now() - start;
+    if (elapsed < 800) await sleep(800 - elapsed);
+
+    if (!ok) { setError(GENERIC_ERROR); return; }
+    onLoginSuccess(user!);
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+❌ المشكلة رقم 9: استدعاءات .catch(() => {}) تُخفي كل الأخطاء (Silent Failures)
+📌 المشكلة:
+في أماكن حساسة جداً (حفظ المستخدم، رفع النسخة الاحتياطية) تُسكِت الأخطاء تماماً. إذا فشل الحفظ السحابي، يعتقد المسؤول أن العملية نجحت رغم أن البيانات لم تُحفظ، ثم تظهر مشكلات "المستخدم اختفى" لاحقاً.
+
+🔴 الكود الخطأ:
+
+typescript
+await supabase.from('users').upsert(payload, { onConflict: 'id' }).catch(() => {});
+await supabase.from('educational_files').upsert({ id: 'system_users_backup', data: backupList }, { onConflict: 'id' }).catch(() => {});
+return true;
+✅ شرح الحل:
+تعامل مع كل استدعاء بشكل صريح وارجع نتيجة واضحة { ok, error } للواجهة، وعرض رسالة للمسؤول بناءً عليها.
+
+✅ الكود المصحح:
+
+typescript
+export async function saveUserToCloud(user: User): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { error: usersErr } = await supabase
+      .from('users')
+      .upsert({
+        id: user.id,
+        civil_id: normalizeCivilId(user.civilId) || null,
+        name: user.name.trim(),
+        role: user.role,
+        user_type: user.userType || 'employee',
+        work_entity: user.workEntity,
+        job_title: user.jobTitle,
+        phone: user.phone ? normalizePhone(user.phone) : null,
+        status: user.status,
+        permissions: user.permissions,
+      }, { onConflict: 'id' });
+
+    if (usersErr) {
+      console.error('users upsert failed:', usersErr);
+      return { ok: false, error: usersErr.message };
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error('Cloud save exception:', err);
+    return { ok: false, error: err?.message || 'خطأ غير معروف' };
+  }
+}
+
+// في AdminPanel:
+const result = await saveUserToCloud(newUser);
+if (!result.ok) {
+  setSyncMessage(`⚠️ فشل الحفظ السحابي: ${result.error}`);
+  return;
+}
+setSyncMessage('✅ تم حفظ الحساب ومزامنته سحابياً.');
+❌ المشكلة رقم 10: المستفيد (الزائر) يحصل على صلاحية تصدير التقارير والتحليل المكاني
+📌 المشكلة:
+في handleBeneficiaryAccess، يُمنح الزائر canExportReports: true و canUseSurroundingAnalysis: true. أي زائر مجهول يستطيع فتح PrintReportModal وتصدير كل بيانات المدارس — وهذا قد يخالف سياسة الخصوصية.
+
+🔴 الكود الخطأ:
+
+typescript
+const beneficiaryUser: User = {
+  id: `beneficiary-${Date.now()}`,
+  name: 'مستفيد (زائر)',
+  role: 'user',
+  userType: 'beneficiary',
+  workEntity: 'العموم / مستفيد من الخدمة',
+  status: 'active',
+  permissions: {
+    visibleLayers: ['schools', 'kmz'],
+    canViewCoordinates: false,
+    canExportReports: true,          // ⚠️
+    canUseSurroundingAnalysis: true, // ⚠️
+  },
+};
+✅ شرح الحل:
+امنع تصدير التقارير والتحليل المكاني عن الزوار. أظهر زر الطباعة فقط لمن يملك canExportReports: true.
+
+✅ الكود المصحح:
+
+typescript
+const beneficiaryUser: User = {
+  id: `beneficiary-${Date.now()}`,
+  name: 'مستفيد (زائر)',
+  role: 'user',
+  userType: 'beneficiary',
+  workEntity: 'العموم / مستفيد من الخدمة',
+  status: 'active',
+  permissions: {
+    visibleLayers: ['schools'],
+    canViewCoordinates: false,
+    canExportReports: false,
+    canUseSurroundingAnalysis: false,
+  },
+};
+
+// في شريط الأدوات العلوي:
+{currentUser.permissions?.canExportReports && (
+  <button onClick={() => setIsPrintModalOpen(true)}>
+    <Printer className="h-4 w-4" />
+    طباعة التقرير الرسمي
+  </button>
+)}
+❌ المشكلة رقم 11: استخدام normalizeCivilId لأرقام الجوال (خطأ منطقي)
+📌 المشكلة:
+في saveUserToCloud يُستدعى normalizeCivilId(user.phone) لتطبيع رقم الجوال. لكن هذه الدالة مُصمّمة للسجلات المدنية، وتزيل كل المسافات والشرطات، وتحوّل الأرقام العربية إلى إنجليزية، ما يُفقد الإشارة + في +966 50 123 4567 → 966501234567.
+
+🔴 الكود الخطأ:
+
+typescript
+phone: user.phone ? normalizeCivilId(user.phone) : null, // ⚠️ دالة خاطئة
+✅ شرح الحل:
+أنشئ دالة منفصلة normalizePhone بأسماء واضحة، تُوحّد الصيغة السعودية إلى +9665xxxxxxxx.
+
+✅ الكود المصحح:
+
+typescript
+export function normalizePhone(input: string | undefined | null): string | null {
+  if (!input) return null;
+  const digits = String(input)
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[^\d+]/g, '');
+
+  if (!digits) return null;
+  if (digits.startsWith('05') && digits.length === 10) return '+966' + digits.slice(1);
+  if (digits.startsWith('5') && digits.length === 9)  return '+966' + digits;
+  if (digits.startsWith('+966')) return digits;
+  return digits;
+}
+
+// في saveUserToCloud:
+phone: user.phone ? normalizePhone(user.phone) : null,
+🟡 المستوى الثالث: أخطاء برمجية متوسطة (Medium)
+❌ المشكلة رقم 12: ظروف تسابقية (Race Condition) في حفظ/تعديل المستخدمين
+📌 المشكلة:
+handleSaveUser تبني المصفوفة الجديدة اعتماداً على users من الحالة. إذا ضغط المستخدم "حفظ" مرتين سريعتين، أو حفظ مسؤولان في نفس الوقت، قد تُفقد بيانات.
+
+🔴 الكود الخطأ:
+
+typescript
+const updated = [newUser, ...users.filter((u) => u.id !== targetId && normalizeCivilId(u.civilId) !== cleanId)];
+saveLocalUsers(updated);
+setUsers(updated);
+✅ شرح الحل:
+استخدم setUsers(prev => ...) واعتمد على الحالة الحالية. أضف فحص isSubmitting في بداية الدالة لمنع التنفيذ المتزامن.
+
+✅ الكود المصحح:
+
+typescript
+const handleSaveUser = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (isSubmitting) return; // منع النقر المزدوج
+  // ... التحقق من الحقول
+
+  setUsers((prev) => {
+    const next = [
+      newUser,
+      ...prev.filter((u) => u.id !== targetId && normalizeCivilId(u.civilId) !== cleanId),
+    ];
+    saveLocalUsers(next);
+    return next;
+  });
+
+  await saveUserToCloud(newUser);
+};
+❌ المشكلة رقم 13: فقدان createdAt عند التعديل
+📌 المشكلة:
+handleSaveUser يضبط createdAt: new Date().toISOString() دائماً — حتى عند التعديل، فيلغي تاريخ الإنشاء الأصلي.
+
+🔴 الكود الخطأ:
+
+typescript
+const newUser: User = {
+  id: targetId,
+  // ...
+  createdAt: new Date().toISOString(), // ⚠️ يستبدل التاريخ الأصلي
+};
+✅ شرح الحل:
+احتفظ بالتاريخ الأصلي عند التعديل، وأنشئه فقط عند الإنشاء الجديد.
+
+✅ الكود المصحح:
+
+typescript
+const existing = users.find((u) => u.id === targetId);
+const newUser: User = {
+  id: targetId,
+  // ...
+  createdAt: existing?.createdAt || new Date().toISOString(),
+};
+❌ المشكلة رقم 14: حجب الإحداثيات "الوهمي" — بيانات الإحداثيات متاحة في حزمة العميل
+📌 المشكلة:
+رغم أن canViewCoordinates: false يخفي إظهار الإحداثيات في الواجهة، إلا أن بيانات lat و lng موجودة كاملة في INITIAL_SCHOOLS_DATA داخل حزمة JavaScript المُرسلة للمتصفح. أي مستفيد يستطيع فتح DevTools ورؤيتها.
+
+🔴 الكود الخطأ:
+
+typescript
+export const INITIAL_SCHOOLS_DATA: EducationalPlace[] = [
+  { id: 'sch-1', ..., lat: 24.4712, lng: 39.6105, ... },
+  // ⚠️ الإحداثيات مرئية للجميع في حزمة العميل
+];
+✅ شرح الحل:
+لا ترسل الإحداثيات إلى العميل إلا لمن يملك الصلاحية — عبر Edge Function تُصفّرها قبل الإرسال.
+
+✅ الكود المصحح:
+
+typescript
+// Supabase Edge Function: get-schools
+export default async function getSchools(req: Request) {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader) return new Response('Unauthorized', { status: 401 });
+
+  const { data: userData } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
+  const canViewCoords = userData?.user?.user_metadata?.permissions?.canViewCoordinates === true;
+
+  const { data: schools } = await supabase.from('schools').select('*');
+
+  const sanitized = (schools || []).map((s) => ({
+    ...s,
+    lat: canViewCoords ? s.lat : null,
+    lng: canViewCoords ? s.lng : null,
+  }));
+
+  return Response.json(sanitized);
+}
+❌ المشكلة رقم 15: عدم تطبيع البحث العربي (Arabic Normalization)
+📌 المشكلة:
+البحث يستخدم toLowerCase().includes() فقط. فإذا كتب المستخدم "احمد" فلن يجد "أحمد"، وإذا كتب "على" فلن يجد "علي".
+
+🔴 الكود الخطأ:
+
+typescript
+const matchSearch =
+  s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  s.district.toLowerCase().includes(searchTerm.toLowerCase());
+✅ شرح الحل:
+أضف دالة normalizeArabic تُوحّد: أ/إ/آ → ا، ة → ه، ى → ي، وتزيل التشكيل والمسافات الزائدة.
+
+✅ الكود المصحح:
+
+typescript
+const normalizeArabic = (str: string): string =>
+  str
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[\u064B-\u0652]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const filteredSchools = useMemo(() => {
+  const q = normalizeArabic(searchTerm);
+  return schools.filter((s) => {
+    const matchSearch = !q ||
+      normalizeArabic(s.name).includes(q) ||
+      normalizeArabic(s.district).includes(q);
+    const matchLevel = selectedLevel === 'all' || s.level === selectedLevel;
+    const matchGender = selectedGender === 'all' || s.gender === selectedGender;
+    const matchDistrict = selectedDistrict === 'all' || s.district === selectedDistrict;
+    return matchSearch && matchLevel && matchGender && matchDistrict;
+  });
+}, [schools, searchTerm, selectedLevel, selectedGender, selectedDistrict]);
+❌ المشكلة رقم 16: وقت انتظار setTimeout بدون تنظيف (Memory Leak)
+📌 المشكلة:
+في AdminPanel يتم setTimeout(() => setSyncMessage(null), 5000) بدون حفظ الـ id ولا إلغاؤه عند إغلاق المكون. إذا أُغلق المكون قبل انتهاء الـ timeout، ستحاول المكون المُلغى تعيين حالة → تحذير React.
+
+🔴 الكود الخطأ:
+
+typescript
+setSyncMessage(`تم الحفظ...`);
+setTimeout(() => setSyncMessage(null), 5000); // ⚠️ لا يوجد تنظيف
+✅ شرح الحل:
+احفظ الـ timeout id في useRef، وألغِه عند إغلاق المكون أو عند استدعاء إشعار جديد.
+
+✅ الكود المصحح:
+
+typescript
+const timeoutRef = useRef<number | null>(null);
+
+useEffect(() => () => {
+  if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+}, []);
+
+const showSyncMessage = (msg: string) => {
+  setSyncMessage(msg);
+  if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+  timeoutRef.current = window.setTimeout(() => setSyncMessage(null), 5000);
+};
+🟢 المستوى الرابع: تحسينات جودة الكود (Quality)
+❌ المشكلة رقم 17: استخدام as any يلغي فائدة TypeScript
+📌 المشكلة:
+as any يمنع TypeScript من التحقق من الأنواع. استخدامه في setFormUserType, setFormRole, setFormStatus يُفقد الحماية.
+
+🔴 الكود الخطأ:
+
+typescript
+onChange={(e) => setFormUserType(e.target.value as any)}
+onChange={(e) => setFormRole(e.target.value as any)}
+onChange={(e) => setFormStatus(e.target.value as any)}
+✅ شرح الحل:
+استخدم دوال تحقق (type guards) للتحقق من القيم قبل تعيينها.
+
+✅ الكود المصحح:
+
+typescript
+const isUserType = (v: string): v is UserTypeMode =>
+  v === 'employee' || v === 'beneficiary';
+const isRole = (v: string): v is 'admin' | 'user' =>
+  v === 'admin' || v === 'user';
+const isStatus = (v: string): v is 'active' | 'disabled' =>
+  v === 'active' || v === 'disabled';
+
+onChange={(e) => { const v = e.target.value; if (isUserType(v)) setFormUserType(v); }}
+onChange={(e) => { const v = e.target.value; if (isRole(v)) setFormRole(v); }}
+onChange={(e) => { const v = e.target.value; if (isStatus(v)) setFormStatus(v); }}
+❌ المشكلة رقم 18: بيانات المدارس ثابتة داخل الكود (لا تُقرأ من السحابة)
+📌 المشكلة:
+INITIAL_SCHOOLS_DATA مجموعة تجريبية ثابتة، وApp لم يقرأ أبداً المدارس من Supabase. التطبيق عملياً "عرض تجريبي" لا يستفيد من قاعدة البيانات.
+
+🔴 الكود الخطأ:
+
+typescript
+const [schools, setSchools] = useState<EducationalPlace[]>(INITIAL_SCHOOLS_DATA);
+// لا يوجد useEffect يجلب من Supabase
+✅ شرح الحل:
+اجلب المدارس من Supabase عند تسجيل الدخول، واحتفظ بالبيانات التجريبية كـ fallback فقط.
+
+✅ الكود المصحح:
+
+typescript
+useEffect(() => {
+  if (!currentUser) return;
+  let cancelled = false;
+  (async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('get-schools');
+      if (error) throw error;
+      if (!cancelled && Array.isArray(data)) setSchools(data);
+    } catch (err) {
+      console.error('Failed to load schools:', err);
+    }
+  })();
+  return () => { cancelled = true; };
+}, [currentUser]);
+❌ المشكلة رقم 19: InteractiveMapView ليس خريطة فعلية
+📌 المشكلة:
+المكوّن باسم "خريطة تفاعلية" لكنه في الواقع بطاقات مرتّبة عشوائياً ولا يعرض أي إحداثيات جغرافية حقيقية. يخالف اسمه والغرض منه.
+
+🔴 الكود الخطأ:
+
+typescript
+export const InteractiveMapView = ({ schools, ... }) => {
+  return (
+    <div className="relative w-full h-full bg-slate-950 ...">
+      {/* ⚠️ بطاقات، لا خريطة حقيقية */}
+      <div className="relative flex-1 w-full flex flex-wrap items-center justify-around p-4 gap-4">
+        {schools.map((school) => <div key={school.id}>{school.name}</div>)}
+      </div>
+    </div>
+  );
+};
+✅ شرح الحل:
+استبدله بمكوّن Leaflet حقيقي (مثل الكود الأصلي في الملف السابق)، أو أعد تسميته إلى SchoolsList لتجنّب التضليل.
+
+✅ الكود المصحح (يستخدم Leaflet):
+
+typescript
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+export function SchoolsMapView({
+  schools, selectedSchool, onSelectSchool, canViewCoordinates,
+}: {
+  schools: EducationalPlace[];
+  selectedSchool: EducationalPlace | null;
+  onSelectSchool: (s: EducationalPlace) => void;
+  canViewCoordinates: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const markersRef = useRef<L.LayerGroup | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+    const map = L.map(containerRef.current, { center: [24.4672, 39.6111], zoom: 11 });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    markersRef.current = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    if (!markersRef.current) return;
+    markersRef.current.clearLayers();
+    schools.forEach((s) => {
+      if (!canViewCoordinates) return; // ⚠️ حجب كامل للمستفيد
+      const marker = L.marker([s.lat, s.lng]).bindPopup(s.name);
+      marker.on('click', () => onSelectSchool(s));
+      markersRef.current!.addLayer(marker);
+    });
+  }, [schools, canViewCoordinates, onSelectSchool]);
+
+  return <div ref={containerRef} className="w-full h-full" />;
+}
+❌ المشكلة رقم 20: نمط React.FC قديم
+📌 المشكلة:
+React.FC<Props> نمط قديم لا يُنصح به بعد React 18 (يفقد الدعم الصحيح لـ children ويجعل generics أصعب).
+
+🔴 الكود الخطأ:
+
+typescript
+export const GuideModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => { ... };
+✅ شرح الحل:
+استخدم النمط الحديث: function Component(props: Props).
+
+✅ الكود المصحح:
+
+typescript
+type GuideModalProps = { isOpen: boolean; onClose: () => void };
+
+export function GuideModal({ isOpen, onClose }: GuideModalProps) {
+  if (!isOpen) return null;
+  return ( /* ... */ );
+}
+❌ المشكلة رقم 21: عدم وجود حالات تحميل/خطأ بديلة في بوابة المستفيد
+📌 المشكلة:
+LandingPortal يعرض زر "دخول فوري" للمستفيد بدون مؤشر تحميل. إذا حدث خطأ، لا يظهر أي شيء.
+
+🔴 الكود الخطأ:
+
+typescript
+const handleBeneficiaryAccess = () => {
+  const beneficiaryUser: User = { /* ... */ };
+  onLoginSuccess(beneficiaryUser);
+};
+
+<button onClick={handleBeneficiaryAccess} className="...">
+  <Compass className="h-4 w-4" />
+  <span>دخول فوري كـ مستفيد (زائر)</span>
+</button>
+✅ شرح الحل:
+أضف حالة isLoading، وعطّل الزر أثناء المعالجة، واعرض أيقونة دوران.
+
+✅ الكود المصحح:
+
+typescript
+const [isBeneficiaryLoading, setIsBeneficiaryLoading] = useState(false);
+
+const handleBeneficiaryAccess = async () => {
+  setIsBeneficiaryLoading(true);
+  setError('');
+  try {
+    const user = await createAnonymousSession();
+    onLoginSuccess(user);
+  } catch {
+    setError('تعذر بدء الجلسة. يرجى إعادة المحاولة.');
+  } finally {
+    setIsBeneficiaryLoading(false);
+  }
+};
+
+<button
+  onClick={handleBeneficiaryAccess}
+  disabled={isBeneficiaryLoading}
+  className="w-full py-3 bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white font-black rounded-xl text-xs flex items-center justify-center gap-2"
+>
+  {isBeneficiaryLoading
+    ? <Loader2 className="h-4 w-4 animate-spin" />
+    : <Compass className="h-4 w-4" />}
+  <span>{isBeneficiaryLoading ? 'جاري الدخول...' : 'دخول فوري كـ مستفيد (زائر)'}</span>
+</button>

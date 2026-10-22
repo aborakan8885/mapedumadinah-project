@@ -12,7 +12,7 @@ interface HeaderProps {
   onAdminPanelClick: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ user, onLoginClick, onLogoutClick, onAdminPanelClick }) => {
+export function Header({ user, onLoginClick, onLogoutClick, onAdminPanelClick }: HeaderProps) {
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 

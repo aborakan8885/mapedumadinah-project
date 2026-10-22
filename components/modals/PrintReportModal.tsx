@@ -34,7 +34,7 @@ function getDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * c;
 }
 
-export const PrintReportModal: React.FC<PrintReportModalProps> = ({
+export function PrintReportModal({
   isOpen,
   onClose,
   surroundingBaseSchool,
@@ -44,7 +44,7 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
   surroundingLevel,
   fileMappings,
   currentUser,
-}) => {
+}: PrintReportModalProps) {
   if (!isOpen || !surroundingBaseSchool) return null;
 
   const baseGroup = getPlaceGroup(surroundingBaseSchool);

@@ -82,7 +82,7 @@ const createDistrictPopupContent = (feature: any, formattedName: string, props: 
     `;
 };
 
-const createPopupContent = (place: EducationalPlace): string => {
+const createPopupContent = (place: EducationalPlace, canViewCoordinates: boolean = true): string => {
     let content = `<div class="p-1 custom-educational-popup" style="min-width: 240px; max-width: 300px; font-family: 'Tajawal', sans-serif;">
         <div class="flex items-center gap-2 border-b-2 border-primary-light/30 pb-2 mb-3">
             <div class="bg-primary-light/10 p-1.5 rounded-lg text-xl">📍</div>
@@ -92,6 +92,13 @@ const createPopupContent = (place: EducationalPlace): string => {
     let columns = (Array.isArray(place.displayColumns) && place.displayColumns.length > 0) ? place.displayColumns : (place.rawData ? Object.keys(place.rawData) : []);
     let hasData = false;
     columns.forEach(col => {
+        // Strip out any explicit coordinate columns if user has no coordinates permission
+        if (!canViewCoordinates) {
+            const colLower = col.toLowerCase();
+            if (colLower.includes('lat') || colLower.includes('lng') || colLower.includes('إحداثي') || colLower.includes('احداثي') || colLower.includes('خط')) {
+                return;
+            }
+        }
         const val = place.rawData[col];
         if (val !== null && val !== undefined && String(val).trim() !== '') {
             hasData = true;
@@ -99,7 +106,15 @@ const createPopupContent = (place: EducationalPlace): string => {
         }
     });
     if (!hasData) content += `<p class="text-gray-400 italic text-center py-4">لا توجد تفاصيل إضافية</p>`;
-    content += '</div><div class="border-t mt-4 pt-3 flex justify-center"><a href="https://www.google.com/maps/dir/?api=1&destination=${place.lat},${place.lng}" target="_blank" class="flex items-center justify-center gap-2 bg-primary-dark text-white px-5 py-2 rounded-full hover:bg-black transition-all font-bold text-xs shadow-md w-full"><span>توجيه عبر خرائط جوجل</span></a></div></div>';
+    content += '</div>';
+
+    if (canViewCoordinates) {
+        content += `<div class="border-t mt-4 pt-3 flex justify-center"><a href="https://www.google.com/maps/dir/?api=1&destination=${place.lat},${place.lng}" target="_blank" class="flex items-center justify-center gap-2 bg-primary-dark text-white px-5 py-2 rounded-full hover:bg-black transition-all font-bold text-xs shadow-md w-full"><span>توجيه عبر خرائط جوجل</span></a></div>`;
+    } else {
+        content += `<div class="border-t mt-3 pt-2 text-center text-[10px] font-bold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200"><span>🔒 الإحداثيات الجغرافية المباشرة محجوبة لدواعي الخصوصية</span></div>`;
+    }
+
+    content += '</div>';
     return content;
 };
 
@@ -137,7 +152,6 @@ interface MapCanvasProps {
   allPlaces: EducationalPlace[];
   isLoading: boolean;
   currentUser?: User | null;
-  // بقية الخصائص للتوافق ولكن لا تستخدم في الفلترة المباشرة هنا
   searchQuery?: string;
   filters?: any;
   visibleCategories?: any;
@@ -155,7 +169,7 @@ interface MapCanvasProps {
   surroundingSchools?: EducationalPlace[];
 }
 
-export const MapCanvas: React.FC<MapCanvasProps> = ({
+export function MapCanvas({
   mapType,
   setMapType,
   selectedPlace,
@@ -174,7 +188,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
   surroundingRegion = 'all',
   surroundingGovernorate = 'all',
   surroundingSchools = [],
-}) => {
+}: MapCanvasProps) {
     const mapRef = useRef<L.Map | null>(null);
     const mapContainerRef = useRef<HTMLDivElement>(null);
     const markersRef = useRef<L.MarkerClusterGroup | null>(null);
@@ -416,9 +430,10 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             const markers: L.Marker[] = [];
             allPlaces.forEach(place => {
                 const marker = L.marker([place.lat, place.lng], { icon: getCategoryIcon(place.category) });
+                const canViewCoords = currentUser?.permissions?.canViewCoordinates !== false && !isBeneficiary;
                 if (!isBeneficiary) {
                     // Lazy popup creation on click with smart side-offsetting
-                    marker.bindPopup(() => createPopupContent(place), { 
+                    marker.bindPopup(() => createPopupContent(place, canViewCoords), { 
                         closeButton: false, 
                         autoPan: true, 
                         autoPanPaddingTop: 100,
@@ -596,6 +611,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
 
         map.closePopup();
         
+        const canViewCoords = currentUser?.permissions?.canViewCoordinates !== false && !isBeneficiary;
         if (!isBeneficiary) {
             // Open the popup on the left side
             L.popup({ 
@@ -606,7 +622,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
                 offset: L.point(-170, 150) 
             })
                 .setLatLng([selectedPlace.lat, selectedPlace.lng])
-                .setContent(createPopupContent(selectedPlace))
+                .setContent(createPopupContent(selectedPlace, canViewCoords))
                 .openOn(map);
         }
 

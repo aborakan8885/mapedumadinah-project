@@ -112,11 +112,28 @@ CREATE TABLE IF NOT EXISTS public.users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 4. تعطيل سياسات الأمان (RLS) مؤقتاً لضمان الكتابة من أي جهاز (كما طلب المستخدم)
-ALTER TABLE public.educational_files DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.files DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.feedback DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.users DISABLE ROW LEVEL SECURITY;
+-- 4. تفعيل سياسات الأمان (RLS) وحمايتها مع السماح للتطبيق (anon)
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.educational_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.feedback ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow full access to anon for now" ON public.users;
+CREATE POLICY "Allow full access to anon for now" ON public.users FOR ALL TO anon USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to anon for now" ON public.educational_files;
+CREATE POLICY "Allow full access to anon for now" ON public.educational_files FOR ALL TO anon USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to anon for now" ON public.files;
+CREATE POLICY "Allow full access to anon for now" ON public.files FOR ALL TO anon USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to anon for now" ON public.feedback;
+CREATE POLICY "Allow full access to anon for now" ON public.feedback FOR ALL TO anon USING (true) WITH CHECK (true);
+
+GRANT ALL ON TABLE public.users TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.educational_files TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.files TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.feedback TO anon, authenticated, service_role;
 
 -- 5. زيادة وقت مهلة الاستعلام (Statement Timeout) لتفادي أخطاء الرفع الضخم
 -- ملاحظة: قد تحتاج لتنفيذ هذا الأمر بصلاحيات superuser في Supabase
@@ -415,11 +432,28 @@ export function normalizeCivilId(input: string | undefined | null): string {
     .trim();
 }
 
+/**
+ * Normalizes Saudi mobile phone numbers to unified format: +9665xxxxxxxx
+ */
+export function normalizePhone(input: string | undefined | null): string | null {
+  if (!input) return null;
+  const digits = String(input)
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[^\d+]/g, '');
+
+  if (!digits) return null;
+  if (digits.startsWith('05') && digits.length === 10) return '+966' + digits.slice(1);
+  if (digits.startsWith('5') && digits.length === 9) return '+966' + digits;
+  if (digits.startsWith('+966')) return digits;
+  return digits;
+}
+
 function mapSupabaseRowToUser(item: any): User {
   const rawPerms = item.permissions && typeof item.permissions === 'object' ? item.permissions : {};
-  const cleanCivilId = normalizeCivilId(item.civil_id || rawPerms._civilId || '');
-  const extractedPassword = rawPerms._password ?? rawPerms.password ?? item.password ?? '';
-  const extractedEmail = rawPerms._email ?? rawPerms.email ?? item.email ?? undefined;
+  const cleanCivilId = normalizeCivilId(item.civil_id || '');
+  const extractedPassword = item.password || rawPerms._password || '';
+  const extractedEmail = item.email || rawPerms._email || undefined;
 
   return {
     id: String(item.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`)),
@@ -431,7 +465,7 @@ function mapSupabaseRowToUser(item: any): User {
     userType: (item.user_type || 'employee') as any,
     workEntity: item.work_entity || 'الشؤون التعليمية',
     jobTitle: item.job_title || 'الشؤون التعليمية',
-    phone: item.phone || '',
+    phone: item.phone ? (normalizePhone(item.phone) || item.phone) : '',
     status: (item.status === 'disabled' ? 'disabled' : 'active'),
     permissions: {
       visibleLayers: Array.isArray(rawPerms.visibleLayers) ? rawPerms.visibleLayers : ['schools', 'kmz'],
@@ -472,8 +506,24 @@ export async function fetchUsersFromSupabase(): Promise<User[] | null> {
     return Array.from(byKey.values());
   } catch (err) {
     console.warn("Supabase fetchUsers error:", err);
-    return null;
   }
+
+  // Dual-layer fallback: check backup in educational_files
+  try {
+    const { data: backupData } = await supabase
+      .from('educational_files')
+      .select('data')
+      .eq('id', 'system_users_backup')
+      .maybeSingle();
+
+    if (backupData && Array.isArray(backupData.data)) {
+      return (backupData.data as any[]).map(mapSupabaseRowToUser);
+    }
+  } catch (err) {
+    console.warn("Supabase fetchUsers backup error:", err);
+  }
+
+  return null;
 }
 
 export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<User | null> {
@@ -482,7 +532,7 @@ export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<U
   if (!supabase || !cleanId) return null;
 
   try {
-    // 1. Direct query on civil_id or id variants
+    // 1. Direct query on civil_id or id variants in 'users' table
     const { data: directData, error: directErr } = await supabase
       .from('users')
       .select('*')
@@ -504,7 +554,23 @@ export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<U
       return mapped.find(u => Boolean(u.password)) || mapped[0];
     }
 
-    // 3. Fallback: fetch all users and match after normalizing civil_id (handles any legacy non-normalized rows)
+    // 3. Fallback: check backup stored in educational_files table
+    const { data: backupRow } = await supabase
+      .from('educational_files')
+      .select('data')
+      .eq('id', 'system_users_backup')
+      .maybeSingle();
+
+    if (backupRow && Array.isArray(backupRow.data)) {
+      const backupUsers = (backupRow.data as any[]).map(mapSupabaseRowToUser);
+      const matched = backupUsers.find(u =>
+        normalizeCivilId(u.civilId) === cleanId ||
+        (u.id && u.id.includes(cleanId))
+      );
+      if (matched) return matched;
+    }
+
+    // 4. Fallback: fetch all users and match after normalizing civil_id
     const allUsers = await fetchUsersFromSupabase();
     if (allUsers && allUsers.length > 0) {
       const matched = allUsers.find(u =>
@@ -521,85 +587,197 @@ export async function fetchUserByCivilIdFromSupabase(civilId: string): Promise<U
   }
 }
 
-export async function upsertUserToSupabase(user: User): Promise<boolean> {
+export async function lookupUserByCivilId(civilId: string): Promise<User | null> {
   const supabase = getSupabaseClient();
-  if (!supabase) return false;
+  const cleanId = normalizeCivilId(civilId);
+  if (!supabase || !cleanId) return null;
+
+  try {
+    // 1. Direct query on users table using precise .or condition
+    const { data: usersData, error: usersErr } = await supabase
+      .from('users')
+      .select('*')
+      .or(`civil_id.eq.${cleanId},id.eq.emp-${cleanId},id.eq.admin-${cleanId},id.eq.${cleanId}`);
+
+    if (usersErr) {
+      console.error("Supabase lookupUserByCivilId query error:", usersErr);
+    } else if (usersData && usersData.length > 0) {
+      const mapped = usersData.map(mapSupabaseRowToUser);
+      return mapped.find(u => Boolean(u.password)) || mapped[0];
+    }
+
+    // 2. Fallback: query 'educational_files' table with id 'system_users_backup'
+    const { data: backupRow, error: backupErr } = await supabase
+      .from('educational_files')
+      .select('data')
+      .eq('id', 'system_users_backup')
+      .maybeSingle();
+
+    if (backupErr) {
+      console.error("Supabase backup lookup error:", backupErr);
+    } else if (backupRow && Array.isArray(backupRow.data)) {
+      const backupUsers = (backupRow.data as any[]).map(mapSupabaseRowToUser);
+      const matched = backupUsers.find(u =>
+        normalizeCivilId(u.civilId) === cleanId ||
+        normalizeCivilId(u.id) === cleanId ||
+        (u.id && u.id.includes(cleanId))
+      );
+      if (matched) return matched;
+    }
+
+    return null;
+  } catch (err) {
+    console.error("lookupUserByCivilId exception:", err);
+    return null;
+  }
+}
+
+export async function saveUserToCloud(user: User): Promise<{ success: boolean; error?: string }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { success: false, error: 'تعذر الاتصال بقاعدة بيانات Supabase (العميل غير مهيأ)' };
+  }
 
   try {
     const cleanCivilId = normalizeCivilId(user.civilId || '');
-    const canonicalId = user.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`);
-
-    // If a record already exists in Supabase with this civil_id, preserve its password if the incoming user has an empty password
-    let passwordToSave = user.password || '';
-    let emailToSave = user.email || '';
-
-    if (cleanCivilId && !passwordToSave) {
-      const { data: existingRows } = await supabase
-        .from('users')
-        .select('*')
-        .eq('civil_id', cleanCivilId);
-
-      if (existingRows && existingRows.length > 0) {
-        for (const r of existingRows) {
-          const mapped = mapSupabaseRowToUser(r);
-          if (mapped.password && !passwordToSave) passwordToSave = mapped.password;
-          if (mapped.email && !emailToSave) emailToSave = mapped.email;
-          // Remove duplicate row if it had a different ID
-          if (r.id !== canonicalId) {
-            await supabase.from('users').delete().eq('id', r.id);
-          }
-        }
-      }
+    if (!cleanCivilId) {
+      return { success: false, error: 'رقم السجل المدني مفقود أو غير صالح' };
     }
+
+    const canonicalId = user.id || (cleanCivilId ? `emp-${cleanCivilId}` : `emp-${Date.now()}`);
 
     const permissionsPayload = {
       visibleLayers: user.permissions?.visibleLayers || ['schools', 'kmz'],
       canViewCoordinates: user.permissions?.canViewCoordinates !== false,
       canExportReports: user.permissions?.canExportReports !== false,
-      canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false,
-      _password: passwordToSave,
-      _email: emailToSave,
-      _civilId: cleanCivilId
+      canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false
     };
 
     const payload = {
       id: canonicalId,
-      civil_id: cleanCivilId || null,
+      civil_id: cleanCivilId,
       name: (user.name || '').trim(),
       role: user.role || 'user',
       user_type: user.userType || 'employee',
       work_entity: user.workEntity || 'الشؤون التعليمية',
       job_title: user.jobTitle || 'الشؤون التعليمية',
-      phone: user.phone ? normalizeCivilId(user.phone) || user.phone.trim() : null,
+      phone: normalizePhone(user.phone) || null,
       status: user.status || 'active',
-      permissions: permissionsPayload
+      permissions: permissionsPayload,
+      ...(user.password ? { password: user.password } : {})
     };
 
-    const { error } = await supabase.from('users').upsert(payload, { onConflict: 'id' });
-    if (error) throw error;
-    return true;
-  } catch (err) {
-    console.error("Supabase upsertUser error:", err);
-    throw err;
+    // 1. Primary write to 'users' table
+    const { error: usersError } = await supabase
+      .from('users')
+      .upsert(payload, { onConflict: 'id' });
+
+    if (usersError) {
+      console.error("Supabase users upsert error:", usersError);
+      return {
+        success: false,
+        error: `خطأ في جدول users: ${usersError.message} (رمز الخطأ: ${usersError.code || 'RLS_VIOLATION'})`
+      };
+    }
+
+    // 2. Secondary write to 'educational_files' (system_users_backup)
+    const { data: currentBackup, error: fetchBackupError } = await supabase
+      .from('educational_files')
+      .select('data')
+      .eq('id', 'system_users_backup')
+      .maybeSingle();
+
+    if (fetchBackupError) {
+      console.error("Supabase fetch backup error:", fetchBackupError);
+      return {
+        success: false,
+        error: `خطأ في قراءة النسخ الاحتياطي: ${fetchBackupError.message}`
+      };
+    }
+
+    let userArray: any[] = (currentBackup && Array.isArray(currentBackup.data)) ? currentBackup.data : [];
+    const idx = userArray.findIndex((u: any) => u.id === canonicalId || normalizeCivilId(u.civil_id) === cleanCivilId);
+    if (idx >= 0) {
+      userArray[idx] = payload;
+    } else {
+      userArray.push(payload);
+    }
+
+    const { error: backupError } = await supabase
+      .from('educational_files')
+      .upsert({
+        id: 'system_users_backup',
+        filename: 'system_users_cloud_sync.json',
+        category: 'unassigned',
+        file_type: 'tabular',
+        data: userArray
+      }, { onConflict: 'id' });
+
+    if (backupError) {
+      console.error("Supabase educational_files backup upsert error:", backupError);
+      return {
+        success: false,
+        error: `خطأ في جدول النسخ الاحتياطي (educational_files): ${backupError.message}`
+      };
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("saveUserToCloud exception:", err);
+    return {
+      success: false,
+      error: err?.message || 'خطأ غير متوقع أثناء الحفظ السحابي'
+    };
   }
 }
 
-export async function deleteUserFromSupabase(userId: string, civilId?: string): Promise<boolean> {
+export async function upsertUserToSupabase(user: User): Promise<{ ok: boolean; error?: string }> {
+  const result = await saveUserToCloud(user);
+  return { ok: result.success, error: result.error };
+}
+
+export async function deleteUserFromSupabase(userId: string, civilId?: string): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabaseClient();
-  if (!supabase) return false;
+  if (!supabase) return { ok: false, error: 'تعذر الاتصال بالسحابة' };
 
   try {
-    const { error } = await supabase.from('users').delete().eq('id', userId);
-    if (error) throw error;
-
     const cleanCivilId = normalizeCivilId(civilId);
+
+    // 1. Delete from users table
+    const { error: delErr } = await supabase.from('users').delete().eq('id', userId);
+    if (delErr) {
+      console.error("Supabase deleteUser error:", delErr);
+      return { ok: false, error: delErr.message };
+    }
+
     if (cleanCivilId) {
       await supabase.from('users').delete().eq('civil_id', cleanCivilId);
     }
-    return true;
-  } catch (err) {
+
+    // 2. Delete from system_users_backup in educational_files
+    try {
+      const { data: backupRow } = await supabase
+        .from('educational_files')
+        .select('data')
+        .eq('id', 'system_users_backup')
+        .maybeSingle();
+
+      if (backupRow && Array.isArray(backupRow.data)) {
+        const cleanedBackup = backupRow.data.filter((b: any) =>
+          b.id !== userId && normalizeCivilId(b.civil_id) !== cleanCivilId
+        );
+        await supabase
+          .from('educational_files')
+          .upsert({ id: 'system_users_backup', data: cleanedBackup }, { onConflict: 'id' });
+      }
+    } catch (bErr) {
+      console.warn("Error cleaning backup row in educational_files:", bErr);
+    }
+
+    return { ok: true };
+  } catch (err: any) {
     console.error("Supabase deleteUser error:", err);
-    throw err;
+    return { ok: false, error: err?.message || 'فشل حذف المستخدم' };
   }
 }
 

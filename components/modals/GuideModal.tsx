@@ -7,7 +7,7 @@ interface GuideModalProps {
   onClose: () => void;
 }
 
-export const GuideModal: React.FC<GuideModalProps> = ({ isOpen, onClose }) => {
+export function GuideModal({ isOpen, onClose }: GuideModalProps) {
   if (!isOpen) return null;
 
   const steps = [

@@ -19,12 +19,14 @@ interface AuthModalProps {
 export const MOCK_USERS_KEY = 'educational_map_users';
 export const DELETED_USERS_KEY = 'educational_map_deleted_users';
 
+export type SafeUser = Omit<User, 'password'>;
+
 export const INITIAL_DEFAULT_USERS: User[] = [
   {
-    id: 'admin-1068575628',
+    id: 'admin-main',
     civilId: '1068575628',
     name: 'مدير النظام الرئيسي',
-    password: 'salim123321rs&1',
+    password: '',
     role: 'admin',
     userType: 'employee',
     workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
@@ -54,25 +56,6 @@ export const INITIAL_DEFAULT_USERS: User[] = [
       visibleLayers: ['schools', 'kmz'],
       canViewCoordinates: true,
       canExportReports: true,
-      canUseSurroundingAnalysis: true
-    },
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'emp-1087654321',
-    civilId: '1087654321',
-    name: 'سعود بن فهد العتيبي',
-    password: '123456',
-    role: 'user',
-    userType: 'employee',
-    workEntity: 'مكتب تعليم شرق المدينة',
-    jobTitle: 'مشرف متابعة ميدانية',
-    status: 'disabled',
-    phone: '0544444444',
-    permissions: {
-      visibleLayers: ['schools', 'kmz'],
-      canViewCoordinates: false,
-      canExportReports: false,
       canUseSurroundingAnalysis: true
     },
     createdAt: new Date().toISOString()
@@ -162,12 +145,14 @@ export const getMockUsers = (): User[] => {
   try {
     const usersJson = localStorage.getItem(MOCK_USERS_KEY);
     if (!usersJson) {
-      localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(INITIAL_DEFAULT_USERS));
+      saveMockUsers(INITIAL_DEFAULT_USERS);
       return INITIAL_DEFAULT_USERS;
     }
-    const parsed: User[] = JSON.parse(usersJson);
-    return parsed.map(u => ({
+    const parsed: any[] = JSON.parse(usersJson);
+    if (!Array.isArray(parsed)) return INITIAL_DEFAULT_USERS;
+    return parsed.map(({ password, ...u }) => ({
       ...u,
+      password: '',
       civilId: normalizeCivilId(u.civilId) || u.civilId
     }));
   } catch (e) {
@@ -176,13 +161,17 @@ export const getMockUsers = (): User[] => {
   }
 };
 
-export const saveMockUsers = (users: User[]) => {
+export const saveMockUsers = (users: (User | SafeUser)[]) => {
   try {
-    const normalized = users.map(u => ({
-      ...u,
-      civilId: normalizeCivilId(u.civilId) || u.civilId
-    }));
-    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(normalized));
+    // Strip plain passwords from localStorage to prevent XSS credential theft
+    const safeUsers: SafeUser[] = users.map(u => {
+      const { password, ...rest } = u as any;
+      return {
+        ...rest,
+        civilId: normalizeCivilId(rest.civilId) || rest.civilId
+      };
+    });
+    localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(safeUsers));
   } catch (e) {
     console.error("Failed to save users to localStorage", e);
   }
@@ -191,8 +180,7 @@ export const saveMockUsers = (users: User[]) => {
 /**
  * Synchronizes local users with Supabase cloud database:
  * 1. Fetches all users from Supabase 'users' table.
- * 2. Automatically pushes any local users (that are not in Supabase and weren't deleted) up to Supabase.
- * 3. Merges cloud and local records (preserving passwords) and updates localStorage cache.
+ * 2. Merges cloud records and updates safe localStorage cache.
  */
 export async function syncUsersWithCloud(): Promise<User[]> {
   const localUsers = getMockUsers();
@@ -210,7 +198,7 @@ export async function syncUsersWithCloud(): Promise<User[]> {
       cloudByKey.set(key, cu);
     }
 
-    // Push any local users that aren't in cloud yet (and weren't explicitly deleted)
+    // Push local defaults if cloud is completely empty
     const usersToPushToCloud: User[] = [];
     for (const lu of localUsers) {
       const key = normalizeCivilId(lu.civilId) || lu.id;
@@ -221,11 +209,6 @@ export async function syncUsersWithCloud(): Promise<User[]> {
       if (!existingCloud) {
         usersToPushToCloud.push(lu);
         cloudByKey.set(key, lu);
-      } else if (!existingCloud.password && lu.password) {
-        // Local has password that cloud didn't have yet -> sync password up to cloud
-        const mergedWithPwd: User = { ...existingCloud, password: lu.password };
-        usersToPushToCloud.push(mergedWithPwd);
-        cloudByKey.set(key, mergedWithPwd);
       }
     }
 
@@ -334,11 +317,15 @@ export async function findApprovedEmployeeByCivilId(rawCivilId: string): Promise
   return { cleanCivilId, existingUser: undefined, mockRecord };
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess }) => {
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const GENERIC_LOGIN_ERROR = 'بيانات الدخول غير صحيحة.';
+
+export function AuthModal({ onClose, onLoginSuccess }: AuthModalProps) {
   const [activeTab, setActiveTab] = useState<'beneficiary' | 'employee'>('employee');
   const [employeeMode, setEmployeeMode] = useState<'login' | 'register_step1' | 'register_step2' | 'register_step3'>('login');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isBeneficiaryLoading, setIsBeneficiaryLoading] = useState(false);
 
   // Login form state
   const [civilIdLogin, setCivilIdLogin] = useState('');
@@ -354,31 +341,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
     syncUsersWithCloud().catch(() => {});
   }, []);
 
-  // Google Login handler (DISABLED - Local Mode)
-  const handleGoogleLogin = async () => {
-    setError('عذراً، تسجيل الدخول عبر Google معطل حالياً في الوضع المحلي. يرجى استخدام الدخول التقليدي برقم السجل.');
-  };
-
   // Beneficiary login handler
-  const handleBeneficiaryAccess = () => {
-    const beneficiaryUser: User = {
-      id: `beneficiary-${Date.now()}`,
-      name: 'مستفيد (زائر)',
-      role: 'user',
-      userType: 'beneficiary',
-      workEntity: 'العموم / مستفيد من الخدمة',
-      status: 'active',
-      permissions: {
-        visibleLayers: ['schools', 'kmz'],
-        canViewCoordinates: false,
-        canExportReports: true,
-        canUseSurroundingAnalysis: true
-      }
-    };
-    onLoginSuccess(beneficiaryUser);
+  const handleBeneficiaryAccess = async () => {
+    setIsBeneficiaryLoading(true);
+    setError('');
+    try {
+      await sleep(300);
+      const beneficiaryUser: User = {
+        id: `beneficiary-${Date.now()}`,
+        name: 'مستفيد (زائر)',
+        role: 'user',
+        userType: 'beneficiary',
+        workEntity: 'العموم / مستفيد من الخدمة',
+        status: 'active',
+        permissions: {
+          visibleLayers: ['schools'],
+          canViewCoordinates: false,
+          canExportReports: false,
+          canUseSurroundingAnalysis: false
+        }
+      };
+      onLoginSuccess(beneficiaryUser);
+    } catch {
+      setError('تعذر تسجيل الدخول كمستفيد. يرجى إعادة المحاولة.');
+    } finally {
+      setIsBeneficiaryLoading(false);
+    }
   };
 
-  // Employee Login handler
+  // Employee Login handler with timing attack mitigation and uniform error
   const handleEmployeeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -391,78 +382,57 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
       return;
     }
 
-    // Default hardcoded admin fallback
-    if (idClean === '1068575628' && pwdClean === 'salim123321rs&1') {
-      const adminUser: User = {
-        id: 'admin-user',
-        civilId: '1068575628',
-        name: 'مدير النظام الرئيسي',
-        role: 'admin',
-        userType: 'employee',
-        workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
-        status: 'active',
-        permissions: {
-          visibleLayers: ['schools', 'kmz'],
-          canViewCoordinates: true,
-          canExportReports: true,
-          canUseSurroundingAnalysis: true
-        }
-      };
-      onLoginSuccess(adminUser);
-      return;
-    }
-
     setIsLoading(true);
+    const start = Date.now();
     try {
+      const { existingUser: cloudMatch } = await findApprovedEmployeeByCivilId(idClean);
       const users = await syncUsersWithCloud();
-      const userByCivilId = users.find(u =>
-        normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()
+
+      const targetUser = cloudMatch || users.find(u =>
+        normalizeCivilId(u.civilId) === idClean || (u.civilId && u.civilId === idClean)
       );
 
-      if (userByCivilId && !userByCivilId.password) {
-        // User was added by admin but hasn't created their password yet -> guide them directly to Step 2
-        if (userByCivilId.status === 'disabled') {
-          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
-          return;
+      let loginOk = false;
+      let isDisabled = false;
+
+      if (targetUser) {
+        if (targetUser.status === 'disabled') {
+          isDisabled = true;
+        } else if (targetUser.password && targetUser.password === pwdClean) {
+          loginOk = true;
         }
-        setFetchedEmployee({
-          civilId: normalizeCivilId(userByCivilId.civilId) || idClean,
-          name: userByCivilId.name,
-          workEntity: userByCivilId.workEntity || 'الشؤون التعليمية',
-          jobTitle: userByCivilId.jobTitle || 'الشؤون التعليمية',
-          phone: userByCivilId.phone || ''
-        });
-        setEmployeeMode('register_step2');
+      }
+
+      // Timing attack mitigation: ensure minimum 800ms response time
+      const elapsed = Date.now() - start;
+      if (elapsed < 800) {
+        await sleep(800 - elapsed);
+      }
+
+      if (isDisabled) {
+        setError('⚠️ الحساب معطل حالياً بواسطة مسؤول النظام. يرجى التواصل مع الإدارة.');
         return;
       }
 
-      const foundUser = users.find(u =>
-        (normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()) &&
-        u.password === pwdClean
-      );
-
-      if (foundUser) {
-        if (foundUser.status === 'disabled') {
-          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
-          return;
-        }
-        onLoginSuccess(foundUser);
-      } else {
-        setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+      if (!loginOk || !targetUser) {
+        setError(GENERIC_LOGIN_ERROR);
+        return;
       }
+
+      onLoginSuccess(targetUser);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Step 1: Civil ID Search
+  // Step 1: Civil ID Search - Account Takeover Protected
   const handleCivilIdFetch = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     const idClean = normalizeCivilId(inputCivilId);
 
-    if (!idClean || idClean.length < 5) {
-      setError('الرجاء إدخال رقم السجل المدني بشكل صحيح.');
+    if (!idClean || idClean.length < 10) {
+      setError('الرجاء إدخال رقم سجل مدني صحيح (10 أرقام).');
       return;
     }
 
@@ -471,12 +441,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
       const { existingUser, mockRecord } = await findApprovedEmployeeByCivilId(idClean);
 
       if (!existingUser && !mockRecord) {
-        setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
+        setError('تعذر التحقق من البيانات. يرجى مراجعة مسؤول النظام.');
         return;
       }
 
       if (existingUser?.status === 'disabled') {
-        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+        setError('الحساب معطل حالياً بواسطة مسؤول النظام.');
+        return;
+      }
+
+      // Security Lock: Only allow initial registration if password is not set yet
+      if (existingUser?.password && existingUser.password.length > 0) {
+        setError('هذا الحساب مفعّل بكلمة مرور مسبقاً. إن نسيت كلمة المرور فتواصل مع المسؤول لإعادة التعيين.');
         return;
       }
 
@@ -510,8 +486,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
     e.preventDefault();
     setError('');
 
-    if (!newPassword || !confirmPassword) {
-      setError('الرجاء إدخال كلمة المرور وتأكيدها.');
+    if (!newPassword || newPassword.length < 6) {
+      setError('يجب ألا تقل كلمة المرور عن 6 أحرف أو أرقام.');
       return;
     }
 
@@ -526,49 +502,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
     try {
       const cleanId = normalizeCivilId(fetchedEmployee.civilId);
       const users = await syncUsersWithCloud();
-      const existingIndex = users.findIndex(u => normalizeCivilId(u.civilId) === cleanId);
+      const existingUser = users.find(u => normalizeCivilId(u.civilId) === cleanId);
 
-      let finalUser: User;
-
-      if (existingIndex >= 0) {
-        const existingUser = users[existingIndex];
-        finalUser = {
-          ...existingUser,
-          civilId: cleanId,
-          password: newPassword,
-          name: fetchedEmployee.name || existingUser.name,
-          workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
-          jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
-          phone: fetchedEmployee.phone || existingUser.phone,
-          status: 'active'
-        };
-        users[existingIndex] = finalUser;
-        saveMockUsers(users);
-      } else {
-        finalUser = {
-          id: `emp-${cleanId}`,
-          civilId: cleanId,
-          name: fetchedEmployee.name,
-          password: newPassword,
-          role: 'user',
-          userType: 'employee',
-          workEntity: fetchedEmployee.workEntity,
-          jobTitle: fetchedEmployee.jobTitle,
-          phone: fetchedEmployee.phone,
-          status: 'active',
-          permissions: {
-            visibleLayers: ['schools', 'kmz'],
-            canViewCoordinates: true,
-            canExportReports: true,
-            canUseSurroundingAnalysis: true
-          },
-          createdAt: new Date().toISOString()
-        };
-        saveMockUsers([...users, finalUser]);
-      }
+      const finalUser: User = {
+        id: existingUser?.id || `emp-${cleanId}`,
+        civilId: cleanId,
+        name: fetchedEmployee.name || existingUser?.name || 'منسوب تعليم',
+        password: newPassword,
+        role: existingUser?.role || 'user',
+        userType: 'employee',
+        workEntity: fetchedEmployee.workEntity || existingUser?.workEntity || 'الشؤون التعليمية',
+        jobTitle: fetchedEmployee.jobTitle || existingUser?.jobTitle || 'الشؤون التعليمية',
+        phone: fetchedEmployee.phone || existingUser?.phone || '',
+        status: 'active',
+        permissions: existingUser?.permissions || {
+          visibleLayers: ['schools', 'kmz'],
+          canViewCoordinates: true,
+          canExportReports: true,
+          canUseSurroundingAnalysis: true
+        },
+        createdAt: existingUser?.createdAt || new Date().toISOString()
+      };
 
       unmarkUserDeletedLocally(finalUser.id, finalUser.civilId);
-      await upsertUserToSupabase(finalUser).catch(err => console.warn("Cloud registration sync warning:", err));
+      const saveRes = await upsertUserToSupabase(finalUser);
+      if (!saveRes.ok) {
+        console.warn("Cloud save warning:", saveRes.error);
+      }
+      
+      const nextList = [finalUser, ...users.filter(u => u.id !== finalUser.id && normalizeCivilId(u.civilId) !== cleanId)];
+      saveMockUsers(nextList);
       onLoginSuccess(finalUser);
     } finally {
       setIsLoading(false);
@@ -648,10 +611,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
 
               <Button
                 onClick={handleBeneficiaryAccess}
-                className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 text-sm"
+                disabled={isBeneficiaryLoading}
+                className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-extrabold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 text-sm"
               >
-                <UserIcon className="h-5 w-5" />
-                <span>الدخول فوراً كمستفيد</span>
+                {isBeneficiaryLoading ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <UserIcon className="h-5 w-5" />
+                )}
+                <span>{isBeneficiaryLoading ? 'جاري بدء جلسة المستفيد...' : 'الدخول فوراً كمستفيد'}</span>
               </Button>
             </div>
           )}
@@ -661,37 +629,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess })
             <>
               {/* LOGIN MODE */}
               {employeeMode === 'login' && (
-                <div className="space-y-6">
-                  {/* Administrative Notice */}
-                  <div className="p-4 bg-primary-light/5 border border-primary-light/20 rounded-2xl text-center">
-                    <p className="text-sm font-bold text-primary-dark mb-2">تنبيه لمسؤول النظام:</p>
-                    <p className="text-xs text-gray-600 leading-relaxed">
-                        لضمان <strong>مزامنة المدارس والحدود</strong> مع جميع المستخدمين، يجب استخدام الدخول عبر Google ببريدك المعتمد.
+                <div className="space-y-4">
+                  <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl text-right">
+                    <p className="text-xs font-bold text-emerald-950 mb-1">تسجيل دخول منسوبي التعليم:</p>
+                    <p className="text-[11px] text-gray-600 leading-relaxed">
+                      الدخول برقم السجل المدني وكلمة المرور الخاصة بحسابك لاستعراض كامل بيانات المدارس والإحداثيات والتقارير.
                     </p>
-                  </div>
-
-                  {/* Primary Action: Google Login */}
-                  <Button 
-                    type="button" 
-                    onClick={handleGoogleLogin} 
-                    disabled={isLoading}
-                    className="w-full py-4 bg-white border-2 border-primary-light/30 hover:border-primary-light hover:bg-primary-light/5 text-primary-dark font-extrabold rounded-2xl shadow-sm flex items-center justify-center gap-4 transition-all text-base"
-                  >
-                    {isLoading ? (
-                        <Loader2 className="h-6 w-6 animate-spin text-primary-dark" />
-                    ) : (
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-6 h-6" alt="Google" />
-                    )}
-                    <span>تسجيل الدخول الرسمي (Google)</span>
-                  </Button>
-
-                  <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-gray-200"></div>
-                    </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-white px-3 text-gray-400 font-bold tracking-widest">أو الدخول التقليدي</span>
-                    </div>
                   </div>
 
                   {/* Secondary Action: Traditional Login */}

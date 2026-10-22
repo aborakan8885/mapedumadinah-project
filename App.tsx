@@ -1544,32 +1544,18 @@ function AppContent() {
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
 
   useEffect(() => {
-    // Local bypass check based on storage
+    // Clean user sync without hardcoded bypass
     const syncUser = () => {
       const savedUserStr = localStorage.getItem('educational_map_current_user');
-      const bypass = localStorage.getItem('educational_map_bypass_secret');
-      
-      if (bypass === '1068575628') {
-        const adminUser: User = {
-          id: 'admin-local',
-          name: 'مدير النظام (دخول محلي)',
-          role: 'admin',
-          userType: 'employee',
-          workEntity: 'الإدارة العامة للتعليم',
-          status: 'active',
-          email: 'aborakan8885@gmail.com',
-          permissions: {
-            visibleLayers: ['schools', 'kmz'],
-            canViewCoordinates: true,
-            canExportReports: true,
-            canUseSurroundingAnalysis: true
-          }
-        };
-        setCurrentUser(adminUser);
-        localStorage.setItem('educational_map_current_user', JSON.stringify(adminUser));
-      } else if (savedUserStr) {
+      if (savedUserStr) {
         try {
-          setCurrentUser(JSON.parse(savedUserStr));
+          const user: User = JSON.parse(savedUserStr);
+          if (user?.status === 'disabled') {
+            setCurrentUser(null);
+            localStorage.removeItem('educational_map_current_user');
+          } else {
+            setCurrentUser(user);
+          }
         } catch {
           setCurrentUser(null);
         }
@@ -1586,7 +1572,7 @@ function AppContent() {
         const savedUserStr = localStorage.getItem('educational_map_current_user');
         if (savedUserStr) {
           const parsed: User = JSON.parse(savedUserStr);
-          if (parsed && parsed.userType === 'employee' && parsed.civilId && parsed.civilId !== '1068575628') {
+          if (parsed && parsed.userType === 'employee' && parsed.civilId) {
             const freshRecord = syncedList.find(u => normalizeCivilId(u.civilId) === normalizeCivilId(parsed.civilId));
             if (freshRecord) {
               if (freshRecord.status === 'disabled') {
@@ -1697,9 +1683,9 @@ function AppContent() {
     return allPlaces.filter(place => {
       // 1. فحص البحث النصي
       if (searchQuery) {
-        const q = searchQuery.toLowerCase().trim();
-        const inName = place.name.toLowerCase().includes(q);
-        const inData = Object.values(place.rawData || {}).some(v => String(v).toLowerCase().includes(q));
+        const q = normalizeArabic(searchQuery.trim().toLowerCase());
+        const inName = normalizeArabic(place.name.toLowerCase()).includes(q);
+        const inData = Object.values(place.rawData || {}).some(v => normalizeArabic(String(v).toLowerCase()).includes(q));
         if (!inName && !inData) return false;
       }
 
@@ -1756,10 +1742,11 @@ function AppContent() {
 
   const handleSearchSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      const q = searchQuery.toLowerCase().trim();
+      const q = normalizeArabic(searchQuery.trim().toLowerCase());
       if (!q) return;
       (e.target as HTMLInputElement).blur();
-      const match = filteredPlaces.find(p => p.name.toLowerCase().includes(q)) || filteredPlaces.find(p => Object.values(p.rawData).some(v => String(v).toLowerCase().includes(q)));
+      const match = filteredPlaces.find(p => normalizeArabic(p.name.toLowerCase()).includes(q)) || 
+                    filteredPlaces.find(p => Object.values(p.rawData || {}).some(v => normalizeArabic(String(v).toLowerCase()).includes(q)));
       if (match) setSelectedPlace(match);
     }
   };
@@ -1767,11 +1754,9 @@ function AppContent() {
   const handleLogout = async () => {
     setCurrentUser(null);
     try {
-      // Local-Only: Just clear storage and reload
       localStorage.removeItem('educational_map_bypass_secret');
       localStorage.removeItem('educational_map_current_user');
       window.location.reload();
-      localStorage.removeItem('educational_map_current_user');
     } catch (e) {
       console.error("Failed to remove user from storage", e);
     }

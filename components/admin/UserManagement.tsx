@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { User as UserIcon, Trash2, UserPlus, ShieldCheck, ShieldAlert, Key, CheckCircle2, XCircle, Search, Edit3, Settings2, Cloud, RefreshCw, Loader2 } from 'lucide-react';
-import type { User } from '../../types';
+import type { User, UserTypeMode } from '../../types';
 import { Button } from '../ui/Button';
 import { ConfirmationModal } from '../modals/ConfirmationModal';
 import {
@@ -11,13 +11,21 @@ import {
     unmarkUserDeletedLocally
 } from '../modals/AuthModal';
 import {
+    saveUserToCloud,
     upsertUserToSupabase,
     deleteUserFromSupabase,
     normalizeCivilId,
+    normalizePhone,
     subscribeToUsersChanges
 } from '../../lib/supabase';
+import { normalizeArabic } from '../../App';
 
-const UserManagement: React.FC = () => {
+// Type guards to eliminate 'as any'
+const isRole = (v: string): v is 'admin' | 'user' => v === 'admin' || v === 'user';
+const isStatus = (v: string): v is 'active' | 'disabled' => v === 'active' || v === 'disabled';
+const isUserType = (v: string): v is UserTypeMode => v === 'employee' || v === 'beneficiary';
+
+export default function UserManagement() {
     const [users, setUsers] = useState<User[]>(() => getMockUsers());
     const [searchQuery, setSearchQuery] = useState('');
     const [userToDelete, setUserToDelete] = useState<User | null>(null);
@@ -27,11 +35,26 @@ const UserManagement: React.FC = () => {
     const [isSaving, setIsSaving] = useState(false);
     const [syncNotice, setSyncNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+    // Timeout ref for clean message memory management
+    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        return () => {
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        };
+    }, []);
+
+    const showSyncNotice = useCallback((notice: { type: 'success' | 'error'; message: string }) => {
+        setSyncNotice(notice);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setSyncNotice(null), 4500);
+    }, []);
+
     // Form state for adding/editing user
     const [formCivilId, setFormCivilId] = useState('');
     const [formName, setFormName] = useState('');
-    const [formWorkEntity, setFormWorkEntity] = useState('');
-    const [formJobTitle, setFormJobTitle] = useState('');
+    const [formWorkEntity, setFormWorkEntity] = useState('الشؤون التعليمية');
+    const [formJobTitle, setFormJobTitle] = useState('الشؤون التعليمية');
     const [formPhone, setFormPhone] = useState('');
     const [formPassword, setFormPassword] = useState('');
     const [formRole, setFormRole] = useState<'admin' | 'user'>('user');
@@ -48,16 +71,15 @@ const UserManagement: React.FC = () => {
             const synced = await syncUsersWithCloud();
             setUsers(synced);
             if (showFeedback) {
-                setSyncNotice({
+                showSyncNotice({
                     type: 'success',
                     message: `تمت مزامنة جميع المستخدمين (${synced.length} حساب) مع قاعدة البيانات السحابية بنجاح.`
                 });
-                setTimeout(() => setSyncNotice(null), 4000);
             }
         } catch (err) {
             console.error("Failed to sync users:", err);
             if (showFeedback) {
-                setSyncNotice({
+                showSyncNotice({
                     type: 'error',
                     message: 'تعذر الاتصال بالسحابة حالياً، تم عرض النسخة المحفوظة.'
                 });
@@ -65,7 +87,7 @@ const UserManagement: React.FC = () => {
         } finally {
             setIsSyncing(false);
         }
-    }, []);
+    }, [showSyncNotice]);
 
     useEffect(() => {
         refreshAndSyncUsers(false);
@@ -80,19 +102,61 @@ const UserManagement: React.FC = () => {
     const handleToggleStatus = async (targetUser: User) => {
         const newStatus: 'active' | 'disabled' = targetUser.status === 'disabled' ? 'active' : 'disabled';
         const updatedTarget: User = { ...targetUser, status: newStatus };
-        const updatedUsers = users.map(u => (u.id === targetUser.id ? updatedTarget : u));
-        saveMockUsers(updatedUsers);
-        setUsers(updatedUsers);
+
+        setUsers(prev => {
+            const next = prev.map(u => (u.id === targetUser.id ? updatedTarget : u));
+            saveMockUsers(next);
+            return next;
+        });
 
         try {
-            await upsertUserToSupabase(updatedTarget);
-            setSyncNotice({
-                type: 'success',
-                message: `تم تحديث حالة دخول "${targetUser.name}" ومزامنتها سحابياً.`
-            });
-            setTimeout(() => setSyncNotice(null), 3500);
+            const res = await upsertUserToSupabase(updatedTarget);
+            if (res.ok) {
+                showSyncNotice({
+                    type: 'success',
+                    message: `تم تحديث حالة دخول "${targetUser.name}" إلى (${newStatus === 'active' ? 'مسموح بالدخول' : 'معطل'}) ومزامنتها سحابياً.`
+                });
+            } else {
+                showSyncNotice({
+                    type: 'error',
+                    message: `فشلت المزامنة السحابية للحالة: ${res.error}`
+                });
+            }
         } catch (err) {
             console.error("Cloud status toggle error:", err);
+        }
+    };
+
+    const handleResetPassword = async (targetUser: User) => {
+        if (!window.confirm(`هل أنت متأكد من إعادة تعيين كلمة المرور للمستخدم: "${targetUser.name}"؟ سيمكنه ذلك من تعيين كلمة مرور جديدة بنفسه بالسجل المدني.`)) {
+            return;
+        }
+
+        const updatedUser: User = { ...targetUser, password: '' };
+        try {
+            const res = await upsertUserToSupabase(updatedUser);
+            if (res.ok) {
+                setUsers(prev => {
+                    const next = prev.map(u => (u.id === targetUser.id ? updatedUser : u));
+                    saveMockUsers(next);
+                    return next;
+                });
+                showSyncNotice({
+                    type: 'success',
+                    message: `تمت إعادة تعيين كلمة المرور بنجاح للمستخدم "${targetUser.name}". يمكنه الآن استخدام شاشة التفعيل بالسجل المدني.`
+                });
+            } else {
+                showSyncNotice({
+                    type: 'error',
+                    message: `فشلت إعادة التعيين سحابياً: ${res.error}`
+                });
+            }
+        } catch (err) {
+            console.error("Reset password error:", err);
+            showSyncNotice({
+                type: 'error',
+                message: 'حدث خطأ أثناء محاولة إعادة تعيين كلمة المرور.'
+            });
         }
     };
 
@@ -102,17 +166,25 @@ const UserManagement: React.FC = () => {
         setUserToDelete(null);
 
         markUserDeletedLocally(target.id, target.civilId);
-        const updatedUsers = users.filter(u => u.id !== target.id && normalizeCivilId(u.civilId) !== normalizeCivilId(target.civilId));
-        saveMockUsers(updatedUsers);
-        setUsers(updatedUsers);
+        setUsers(prev => {
+            const next = prev.filter(u => u.id !== target.id && normalizeCivilId(u.civilId) !== normalizeCivilId(target.civilId));
+            saveMockUsers(next);
+            return next;
+        });
 
         try {
-            await deleteUserFromSupabase(target.id, target.civilId);
-            setSyncNotice({
-                type: 'success',
-                message: `تم حذف حساب "${target.name}" نهائياً من النظام والسحابة.`
-            });
-            setTimeout(() => setSyncNotice(null), 3500);
+            const delRes = await deleteUserFromSupabase(target.id, target.civilId);
+            if (delRes.ok) {
+                showSyncNotice({
+                    type: 'success',
+                    message: `تم حذف حساب "${target.name}" نهائياً من النظام والسحابة والنسخ الاحتياطية.`
+                });
+            } else {
+                showSyncNotice({
+                    type: 'error',
+                    message: `فشل الحذف من السحابة: ${delRes.error}`
+                });
+            }
         } catch (err) {
             console.error("Cloud delete error:", err);
         }
@@ -152,6 +224,8 @@ const UserManagement: React.FC = () => {
 
     const handleSaveUser = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (isSaving) return; // Prevent double submission race condition
+
         const cleanName = formName.trim();
         const cleanCivilId = normalizeCivilId(formCivilId);
         if (!cleanName || !cleanCivilId) return;
@@ -165,82 +239,74 @@ const UserManagement: React.FC = () => {
                 canUseSurroundingAnalysis: permSurrounding
             };
 
-            let savedUser: User;
-            let updatedUsers: User[];
-
-            // Check if editing or if a user with the same civilId already exists
             const existingByCivilId = users.find(u => normalizeCivilId(u.civilId) === cleanCivilId);
             const targetExisting = editingUser || existingByCivilId;
 
-            if (targetExisting) {
-                savedUser = {
-                    ...targetExisting,
-                    id: targetExisting.id || `emp-${cleanCivilId}`,
-                    civilId: cleanCivilId,
-                    name: cleanName,
-                    workEntity: formWorkEntity || 'الشؤون التعليمية',
-                    jobTitle: formJobTitle || 'الشؤون التعليمية',
-                    phone: normalizeCivilId(formPhone) || formPhone.trim(),
-                    password: formPassword.trim() ? formPassword.trim() : (targetExisting.password || ''),
-                    role: formRole,
-                    userType: 'employee' as const,
-                    status: formStatus,
-                    permissions
-                };
-                updatedUsers = users.map(u =>
-                    (u.id === targetExisting.id || normalizeCivilId(u.civilId) === cleanCivilId) ? savedUser : u
-                );
-            } else {
-                savedUser = {
-                    id: `emp-${cleanCivilId}`,
-                    civilId: cleanCivilId,
-                    name: cleanName,
-                    password: formPassword.trim() || '',
-                    role: formRole,
-                    userType: 'employee',
-                    workEntity: formWorkEntity || 'الشؤون التعليمية',
-                    jobTitle: formJobTitle || 'الشؤون التعليمية',
-                    phone: normalizeCivilId(formPhone) || formPhone.trim(),
-                    status: formStatus,
-                    permissions,
-                    createdAt: new Date().toISOString()
-                };
-                updatedUsers = [savedUser, ...users];
+            const savedUser: User = {
+                id: targetExisting?.id || `emp-${cleanCivilId}`,
+                civilId: cleanCivilId,
+                name: cleanName,
+                workEntity: formWorkEntity || 'الشؤون التعليمية',
+                jobTitle: formJobTitle || 'الشؤون التعليمية',
+                phone: normalizePhone(formPhone) || formPhone.trim(),
+                password: formPassword.trim() ? formPassword.trim() : (targetExisting?.password || ''),
+                role: formRole,
+                userType: 'employee',
+                status: formStatus,
+                permissions,
+                // Preserve original createdAt on updates (Issue 13)
+                createdAt: targetExisting?.createdAt || new Date().toISOString()
+            };
+
+            // 1. First save directly to cloud and wait for confirmation
+            const cloudRes = await saveUserToCloud(savedUser);
+            if (!cloudRes.success) {
+                alert(`فشل الحفظ السحابي: ${cloudRes.error || 'تعذر الاتصال بالسحابة'}`);
+                return; // Do NOT close modal, do NOT clear fields, do NOT show success!
             }
 
+            // 2. Only upon confirmed cloud success, update local state & close modal
             unmarkUserDeletedLocally(savedUser.id, savedUser.civilId);
-            saveMockUsers(updatedUsers);
-            setUsers(updatedUsers);
+            setUsers(prev => {
+                const next = [
+                    savedUser,
+                    ...prev.filter(u => u.id !== savedUser.id && normalizeCivilId(u.civilId) !== cleanCivilId)
+                ];
+                saveMockUsers(next);
+                return next;
+            });
 
-            await upsertUserToSupabase(savedUser);
-
+            // 3. Clear form and close modal
+            setFormCivilId('');
+            setFormName('');
+            setFormWorkEntity('');
+            setFormJobTitle('');
+            setFormPhone('');
+            setFormPassword('');
             setIsAddModalOpen(false);
-            setSyncNotice({
+
+            showSyncNotice({
                 type: 'success',
-                message: `تم حفظ حساب "${savedUser.name}" (سجل: ${savedUser.civilId}) ومزامنته سحابياً بنجاح. يمكنه الآن استدعاء بياناته من أي جهاز.`
+                message: `تم حفظ حساب "${savedUser.name}" (سجل: ${savedUser.civilId}) ومزامنته سحابياً بنجاح.`
             });
-            setTimeout(() => setSyncNotice(null), 5000);
         } catch (err: any) {
-            console.error("Failed to save user to cloud:", err);
-            setIsAddModalOpen(false);
-            setSyncNotice({
-                type: 'error',
-                message: `تم حفظ المستخدم محلياً ولكن تعذرت المزامنة السحابية: ${err?.message || 'خطأ في الاتصال'}`
-            });
+            console.error("Failed to save user:", err);
+            alert(`فشل الحفظ السحابي: ${err?.message || 'خطأ غير معروف'}`);
         } finally {
             setIsSaving(false);
         }
     };
 
+    // Arabic normalized search (Issue 15)
     const filteredUsers = users.filter(u => {
-        const q = searchQuery.toLowerCase().trim();
-        const qNorm = normalizeCivilId(q);
-        if (!q) return true;
+        const q = normalizeArabic(searchQuery);
+        const qNormCivil = normalizeCivilId(searchQuery);
+        if (!q && !qNormCivil) return true;
         return (
-            u.name.toLowerCase().includes(q) ||
-            (u.civilId && (u.civilId.includes(q) || (qNorm && normalizeCivilId(u.civilId).includes(qNorm)))) ||
-            (u.workEntity && u.workEntity.toLowerCase().includes(q)) ||
-            (u.jobTitle && u.jobTitle.toLowerCase().includes(q))
+            (q && normalizeArabic(u.name).includes(q)) ||
+            (qNormCivil && u.civilId && normalizeCivilId(u.civilId).includes(qNormCivil)) ||
+            (q && u.workEntity && normalizeArabic(u.workEntity).includes(q)) ||
+            (q && u.jobTitle && normalizeArabic(u.jobTitle).includes(q))
         );
     });
 
@@ -362,85 +428,94 @@ const UserManagement: React.FC = () => {
                                             )}
                                         </td>
 
-                                            {/* Access Status (Active vs Disabled) */}
-                                            <td className="px-4 py-3 text-center">
-                                                {isDisabled ? (
-                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-red-700 bg-red-100 rounded-full border border-red-200">
-                                                        <XCircle className="h-3 w-3" />
-                                                        معطل الدخول
-                                                    </span>
-                                                ) : (
-                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 rounded-full border border-emerald-200">
-                                                        <CheckCircle2 className="h-3 w-3" />
-                                                        مسموح بالدخول
-                                                    </span>
-                                                )}
-                                            </td>
+                                        {/* Access Status (Active vs Disabled) */}
+                                        <td className="px-4 py-3 text-center">
+                                            {isDisabled ? (
+                                                <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-red-700 bg-red-100 rounded-full border border-red-200">
+                                                    <XCircle className="h-3 w-3" />
+                                                    معطل الدخول
+                                                </span>
+                                            ) : (
+                                                <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 rounded-full border border-emerald-200">
+                                                    <CheckCircle2 className="h-3 w-3" />
+                                                    مسموح بالدخول
+                                                </span>
+                                            )}
+                                        </td>
 
-                                            {/* Coordinates permission status */}
-                                            <td className="px-4 py-3 text-center">
-                                                {canCoords ? (
-                                                    <span className="px-2 py-0.5 text-[10px] font-bold text-emerald-800 bg-emerald-50 rounded-md border border-emerald-200">
-                                                        متاحة 📍
-                                                    </span>
-                                                ) : (
-                                                    <span className="px-2 py-0.5 text-[10px] font-bold text-amber-800 bg-amber-50 rounded-md border border-amber-200">
-                                                        مخفية 🔒
-                                                    </span>
-                                                )}
-                                            </td>
+                                        {/* Coordinates permission status */}
+                                        <td className="px-4 py-3 text-center">
+                                            {canCoords ? (
+                                                <span className="px-2 py-0.5 text-[10px] font-bold text-emerald-800 bg-emerald-50 rounded-md border border-emerald-200">
+                                                    متاحة 📍
+                                                </span>
+                                            ) : (
+                                                <span className="px-2 py-0.5 text-[10px] font-bold text-amber-800 bg-amber-50 rounded-md border border-amber-200">
+                                                    مخفية 🔒
+                                                </span>
+                                            )}
+                                        </td>
 
-                                            {/* Action Buttons */}
-                                            <td className="px-4 py-3 text-center">
-                                                <div className="flex items-center justify-center gap-1.5">
-                                                    {/* Toggle Disable / Enable Access */}
-                                                    <button
-                                                        onClick={() => handleToggleStatus(u)}
-                                                        className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm ${isDisabled ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300'}`}
-                                                        title={isDisabled ? 'السماح بتسجيل الدخول' : 'تعطيل الحساب ومنعه من الدخول'}
-                                                    >
-                                                        {isDisabled ? (
-                                                            <>
-                                                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                                                <span>السماح بالدخول</span>
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <XCircle className="h-3.5 w-3.5 text-amber-700" />
-                                                                <span>تعطيل الدخول</span>
-                                                            </>
-                                                        )}
-                                                    </button>
+                                        {/* Action Buttons */}
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="flex items-center justify-center gap-1.5">
+                                                {/* Toggle Disable / Enable Access */}
+                                                <button
+                                                    onClick={() => handleToggleStatus(u)}
+                                                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm ${isDisabled ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300'}`}
+                                                    title={isDisabled ? 'السماح بتسجيل الدخول' : 'تعطيل الحساب ومنعه من الدخول'}
+                                                >
+                                                    {isDisabled ? (
+                                                        <>
+                                                            <CheckCircle2 className="h-3.5 w-3.5" />
+                                                            <span>السماح بالدخول</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <XCircle className="h-3.5 w-3.5 text-amber-700" />
+                                                            <span>تعطيل الدخول</span>
+                                                        </>
+                                                    )}
+                                                </button>
 
-                                                    {/* Edit permissions modal */}
-                                                    <button
-                                                        onClick={() => openEditModal(u)}
-                                                        className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300"
-                                                        title="تعديل الصلاحيات والبيانات"
-                                                    >
-                                                        <Settings2 className="h-4 w-4" />
-                                                    </button>
+                                                {/* Reset Password Button (Admin Only) */}
+                                                <button
+                                                    onClick={() => handleResetPassword(u)}
+                                                    className="p-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
+                                                    title="إعادة تعيين كلمة المرور للمستخدم"
+                                                >
+                                                    <Key className="h-4 w-4" />
+                                                </button>
 
-                                                    {/* Delete user button */}
-                                                    <button
-                                                        onClick={() => setUserToDelete(u)}
-                                                        className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200"
-                                                        title="حذف الحساب"
-                                                    >
-                                                        <Trash2 className="h-4 w-4" />
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    ) : (
-                        <div className="p-8 text-center text-slate-500 font-bold text-fluid-sm">
-                            لا يوجد مستخدمون مطابقون لبحثك.
-                        </div>
-                    )}
+                                                {/* Edit permissions modal */}
+                                                <button
+                                                    onClick={() => openEditModal(u)}
+                                                    className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300"
+                                                    title="تعديل الصلاحيات والبيانات"
+                                                >
+                                                    <Settings2 className="h-4 w-4" />
+                                                </button>
+
+                                                {/* Delete user button */}
+                                                <button
+                                                    onClick={() => setUserToDelete(u)}
+                                                    className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200"
+                                                    title="حذف الحساب"
+                                                >
+                                                    <Trash2 className="h-4 w-4" />
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                ) : (
+                    <div className="p-8 text-center text-slate-500 font-bold text-fluid-sm">
+                        لا يوجد مستخدمون مطابقون لبحثك.
+                    </div>
+                )}
             </div>
 
             {/* Add / Edit User Modal */}
@@ -518,27 +593,45 @@ const UserManagement: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1">نوع الدور في النظام</label>
-                                <select
-                                    value={formRole}
-                                    onChange={e => setFormRole(e.target.value as any)}
-                                    className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white"
-                                >
-                                    <option value="user">منسوبي الإدارة</option>
-                                    <option value="admin">مسؤول نظام (Admin)</option>
-                                </select>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">نوع الدور في النظام</label>
+                                    <select
+                                        value={formRole}
+                                        onChange={e => {
+                                            const val = e.target.value;
+                                            if (isRole(val)) setFormRole(val);
+                                        }}
+                                        className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white"
+                                    >
+                                        <option value="user">منسوبي الإدارة</option>
+                                        <option value="admin">مسؤول نظام (Admin)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">رقم الجوال (اختياري)</label>
+                                    <input
+                                        type="tel"
+                                        value={formPhone}
+                                        onChange={e => setFormPhone(e.target.value)}
+                                        placeholder="05xxxxxxxx"
+                                        className="w-full px-3 py-2 border rounded-xl text-xs font-mono"
+                                    />
+                                </div>
                             </div>
 
                             <div className="p-2.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[11px] text-emerald-900 font-medium">
-                                ℹ️ <strong>ملاحظة:</strong> يتم حفظ هذا المستخدم سحابياً فوراً. يقوم منسوب الإدارة بكتابة رقم سجله المدني والضغط على <strong>استدعاء البيانات</strong> لإنشاء كلمة المرور الخاصة به من أي جهاز.
+                                ℹ️ <strong>ملاحظة أمنية:</strong> يتم حفظ هذا المستخدم سحابياً بدون كلمة مرور مكشوفة. يقوم منسوب الإدارة بكتابة رقم سجله المدني والضغط على <strong>استدعاء البيانات</strong> لتعيين كلمة المرور الخاصة به من أي جهاز بأمان.
                             </div>
 
                             <div className="pt-2">
                                 <label className="block text-xs font-bold text-gray-700 mb-1">حالة الحساب وتصريح الدخول</label>
                                 <select
                                     value={formStatus}
-                                    onChange={e => setFormStatus(e.target.value as any)}
+                                    onChange={e => {
+                                        const val = e.target.value;
+                                        if (isStatus(val)) setFormStatus(val);
+                                    }}
                                     className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white"
                                 >
                                     <option value="active">🟢 مسموح بالدخول (حساب نشط)</option>
@@ -600,11 +693,8 @@ const UserManagement: React.FC = () => {
                 onClose={() => setUserToDelete(null)}
                 onConfirm={handleDeleteConfirm}
                 title="تأكيد حذف الحساب"
-                message={`هل أنت متأكد من حذف حساب "${userToDelete?.name}" برقم السجل (${userToDelete?.civilId})؟ لا يمكن التراجع عن الحذف.`}
+                message={`هل أنت متأكد من حذف حساب "${userToDelete?.name}" برقم السجل (${userToDelete?.civilId})؟ سيتم مسح السجل من قاعدة البيانات السحابية والنسخ الاحتياطية نهائياً.`}
             />
         </div>
     );
-};
-
-export default UserManagement;
-
+}

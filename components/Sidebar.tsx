@@ -53,7 +53,7 @@ const categoryInfo: Record<string, { name: string; icon: React.ElementType; colo
 
 const governorates = ['المدينة المنورة', 'ينبع', 'العلا', 'المهد', 'الحناكية', 'خيبر', 'بدر', 'وادي الفرع'];
 
-const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; icon: React.ElementType }> = ({ title, children, icon: Icon }) => {
+function CollapsibleSection({ title, children, icon: Icon }: { title: string; children: React.ReactNode; icon: React.ElementType }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   return (
     <div className="py-1.5">
@@ -70,9 +70,9 @@ const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; i
       {!isCollapsed && <div className="mt-2 space-y-2 pr-0.5">{children}</div>}
     </div>
   );
-};
+}
 
-export const Sidebar: React.FC<SidebarProps> = ({
+export function Sidebar({
   isOpen,
   setIsOpen,
   filters,
@@ -98,7 +98,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setSurroundingGovernorate,
   surroundingSchools = [],
   currentUser = null,
-}) => {
+}: SidebarProps) {
   const { boundaryGeojson, allPlaces, fileMappings } = useData();
   const isAdmin = currentUser?.role === 'admin';
 
@@ -651,17 +651,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
               
               <Separator className="my-2 bg-slate-200" />
 
-              <CollapsibleSection title="التقارير والإحصائيات" icon={FileText}>
-                <div className="p-2 bg-white rounded-lg border border-slate-200 space-y-2">
-                  <p className="text-xs font-bold text-slate-700 leading-snug">
-                    إنشاء تقارير إحصائية بناءً على الطبقات والفلاتر النشطة.
-                  </p>
-                  <Button onClick={onReportsClick} className="w-full gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-extrabold text-xs py-1.5">
-                    <FileText className="h-3.5 w-3.5" />
-                    لوحة التقارير
-                  </Button>
-                </div>
-              </CollapsibleSection>
+              {currentUser?.permissions?.canExportReports && (
+                <CollapsibleSection title="التقارير والإحصائيات" icon={FileText}>
+                  <div className="p-2 bg-white rounded-lg border border-slate-200 space-y-2">
+                    <p className="text-xs font-bold text-slate-700 leading-snug">
+                      إنشاء تقارير إحصائية بناءً على الطبقات والفلاتر النشطة.
+                    </p>
+                    <Button onClick={onReportsClick} className="w-full gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-extrabold text-xs py-1.5">
+                      <FileText className="h-3.5 w-3.5" />
+                      لوحة التقارير
+                    </Button>
+                  </div>
+                </CollapsibleSection>
+              )}
             </>
           )}
         </div>
@@ -672,27 +674,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
     </aside>
   );
-};
+}
 
-const FilterGroup: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+function FilterGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
     <div className="p-2 bg-white rounded-lg border border-slate-200">
         <h4 className="text-xs font-black mb-2 text-slate-900 border-b border-slate-100 pb-1">{title}</h4>
         <div className="space-y-2">{children}</div>
     </div>
-);
+  );
+}
 
-const InputControl: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { label: string }> = ({ label, ...props }) => (
+function InputControl({ label, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
+  return (
     <div>
         <label className="block text-[10px] font-black text-slate-900 mb-0.5">{label}</label>
         <input {...props} className="w-full px-2 py-1 text-xs font-bold border-2 border-slate-300 rounded focus:outline-none focus:border-indigo-600 bg-white text-slate-900" />
     </div>
-);
+  );
+}
 
-const SelectControl: React.FC<React.SelectHTMLAttributes<HTMLSelectElement> & { label: string }> = ({ label, children, ...props }) => (
+function SelectControl({ label, children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { label: string }) {
+  return (
     <div>
         <label className="block text-[10px] font-black text-slate-900 mb-0.5">{label}</label>
         <select {...props} className="w-full px-2 py-1 text-xs font-bold border-2 border-slate-300 rounded focus:outline-none focus:border-indigo-600 bg-white text-slate-900">
             {children}
         </select>
     </div>
-);
+  );
+}

@@ -53,13 +53,13 @@ type ExportOptionsState = {
     governmentPrograms: boolean;
 };
 
-export const ReportsPanel: React.FC<ReportsPanelProps> = ({
+export function ReportsPanel({
   onClose,
   allPlaces,
   fileMappings,
   visibleCategories,
   filters,
-}) => {
+}: ReportsPanelProps) {
   const [activeTab, setActiveTab] = useState<'region' | 'governorate' | 'district'>('region');
   const [groupingMethod, setGroupingMethod] = useState<'spatial' | 'text'>('spatial');
   const [isExporting, setIsExporting] = useState<string | null>(null);

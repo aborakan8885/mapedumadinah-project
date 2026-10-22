@@ -22,11 +22,12 @@ interface LandingPortalProps {
   onLoginSuccess: (user: User) => void;
 }
 
-export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) => {
+export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
   const [selectedGate, setSelectedGate] = useState<'employee' | 'beneficiary'>('employee');
   const [employeeMode, setEmployeeMode] = useState<'login' | 'register_step1' | 'register_step2' | 'register_step3'>('login');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isBeneficiaryLoading, setIsBeneficiaryLoading] = useState(false);
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
 
   // Login form state
@@ -52,25 +53,34 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
   }, []);
 
   // Beneficiary login handler
-  const handleBeneficiaryAccess = () => {
-    const beneficiaryUser: User = {
-      id: `beneficiary-${Date.now()}`,
-      name: 'مستفيد (زائر)',
-      role: 'user',
-      userType: 'beneficiary',
-      workEntity: 'العموم / مستفيد من الخدمة',
-      status: 'active',
-      permissions: {
-        visibleLayers: ['schools', 'kmz'],
-        canViewCoordinates: false, // إخفاء الإحداثيات الجغرافية
-        canExportReports: true,
-        canUseSurroundingAnalysis: true
-      }
-    };
-    onLoginSuccess(beneficiaryUser);
+  const handleBeneficiaryAccess = async () => {
+    setIsBeneficiaryLoading(true);
+    setError('');
+    try {
+      await new Promise(r => setTimeout(r, 250));
+      const beneficiaryUser: User = {
+        id: `beneficiary-${Date.now()}`,
+        name: 'مستفيد (زائر)',
+        role: 'user',
+        userType: 'beneficiary',
+        workEntity: 'العموم / مستفيد من الخدمة',
+        status: 'active',
+        permissions: {
+          visibleLayers: ['schools'],
+          canViewCoordinates: false,
+          canExportReports: false,
+          canUseSurroundingAnalysis: false
+        }
+      };
+      onLoginSuccess(beneficiaryUser);
+    } catch {
+      setError('تعذر تسجيل الدخول كمستفيد. يرجى إعادة المحاولة.');
+    } finally {
+      setIsBeneficiaryLoading(false);
+    }
   };
 
-  // Employee Login handler
+  // Employee Login handler with timing attack mitigation and uniform error
   const handleEmployeeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -83,101 +93,57 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
       return;
     }
 
-    // New admin credentials
-    if (idClean === '1068575628' && pwdClean === 'salim123321rs&1') {
-      const adminUser: User = {
-        id: 'admin-main',
-        civilId: '1068575628',
-        name: 'مدير النظام الرئيسي',
-        role: 'admin',
-        userType: 'employee',
-        workEntity: 'الإدارة العامة للتعليم',
-        status: 'active',
-        permissions: {
-          visibleLayers: ['schools', 'kmz'],
-          canViewCoordinates: true,
-          canExportReports: true,
-          canUseSurroundingAnalysis: true
-        }
-      };
-      onLoginSuccess(adminUser);
-      return;
-    }
-
-    // Default hardcoded admin fallback
-    if ((rawId.toLowerCase() === 'admin' || idClean === '1000000000') && pwdClean === 'admin') {
-      const adminUser: User = {
-        id: 'admin-user',
-        civilId: '1000000000',
-        name: 'مسؤول النظام الرئيسي',
-        role: 'admin',
-        userType: 'employee',
-        workEntity: 'الإدارة العامة للتعليم',
-        status: 'active',
-        permissions: {
-          visibleLayers: ['schools', 'kmz'],
-          canViewCoordinates: true,
-          canExportReports: true,
-          canUseSurroundingAnalysis: true
-        }
-      };
-      onLoginSuccess(adminUser);
-      return;
-    }
-
     setIsSubmitting(true);
+    const start = Date.now();
     try {
       const { existingUser: cloudMatch } = await findApprovedEmployeeByCivilId(idClean);
       const users = await syncUsersWithCloud();
 
       const matchedByCivilId = cloudMatch || users.find(u =>
-        normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()
+        normalizeCivilId(u.civilId) === idClean || (u.civilId && u.civilId === idClean)
       );
 
-      // If user was added by admin in cloud/system but hasn't created their password yet, take them directly to Step 2
-      if (matchedByCivilId && !matchedByCivilId.password) {
+      let loginOk = false;
+      let isDisabled = false;
+
+      if (matchedByCivilId) {
         if (matchedByCivilId.status === 'disabled') {
-          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
-          return;
+          isDisabled = true;
+        } else if (matchedByCivilId.password && matchedByCivilId.password === pwdClean) {
+          loginOk = true;
         }
-        setFetchedEmployee({
-          civilId: normalizeCivilId(matchedByCivilId.civilId) || idClean,
-          name: matchedByCivilId.name,
-          workEntity: matchedByCivilId.workEntity || 'الشؤون التعليمية',
-          jobTitle: matchedByCivilId.jobTitle || 'الشؤون التعليمية',
-          phone: matchedByCivilId.phone || ''
-        });
-        setEmployeeMode('register_step2');
+      }
+
+      // Timing attack mitigation: ensure minimum 800ms response time
+      const elapsed = Date.now() - start;
+      if (elapsed < 800) {
+        await new Promise(r => setTimeout(r, 800 - elapsed));
+      }
+
+      if (isDisabled) {
+        setError('⚠️ الحساب معطل حالياً بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
         return;
       }
 
-      const foundUser = users.find(u =>
-        (normalizeCivilId(u.civilId) === idClean || u.name.trim().toLowerCase() === rawId.toLowerCase()) &&
-        u.password === pwdClean
-      ) || (cloudMatch && cloudMatch.password === pwdClean ? cloudMatch : undefined);
-
-      if (foundUser) {
-        if (foundUser.status === 'disabled') {
-          setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
-          return;
-        }
-        onLoginSuccess(foundUser);
-      } else {
-        setError('رقم السجل المدني أو كلمة المرور غير صحيحة.');
+      if (!loginOk || !matchedByCivilId) {
+        setError('بيانات الدخول غير صحيحة.');
+        return;
       }
+
+      onLoginSuccess(matchedByCivilId);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Step 1: Civil ID Search (Live Cloud + Local Fetch)
+  // Step 1: Civil ID Search (Live Cloud + Local Fetch) - Protected against account takeover
   const handleCivilIdFetch = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     const idClean = normalizeCivilId(inputCivilId);
 
-    if (!idClean || idClean.length < 5) {
-      setError('الرجاء إدخال رقم السجل المدني بشكل صحيح.');
+    if (!idClean || idClean.length < 10) {
+      setError('الرجاء إدخال رقم سجل مدني صحيح (10 أرقام).');
       return;
     }
 
@@ -186,12 +152,18 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
       const { existingUser, mockRecord } = await findApprovedEmployeeByCivilId(idClean);
 
       if (!existingUser && !mockRecord) {
-        setError('❌ هذا السجل المدني غير مضاف في قائمة الموظفين المعتمدين للتسجيل. لا يمكنك التسجيل بالنظام.');
+        setError('تعذر التحقق من البيانات. يرجى مراجعة مسؤول النظام.');
         return;
       }
 
       if (existingUser?.status === 'disabled') {
-        setError('⚠️ تم تعطيل إمكانية الدخول لحسابك بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+        setError('الحساب معطل حالياً بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
+        return;
+      }
+
+      // Security Lock: Only allow initial registration if password is not set yet
+      if (existingUser?.password && existingUser.password.length > 0) {
+        setError('هذا الحساب مفعّل بكلمة مرور مسبقاً. إن نسيت كلمة المرور فتواصل مع المسؤول لإعادة التعيين.');
         return;
       }
 
@@ -600,11 +572,16 @@ export const LandingPortal: React.FC<LandingPortalProps> = ({ onLoginSuccess }) 
             <div className="pt-2">
               <Button
                 onClick={() => { setSelectedGate('beneficiary'); handleBeneficiaryAccess(); }}
-                className="w-full py-2 bg-teal-600 hover:bg-teal-500 text-white font-extrabold rounded-lg shadow-md transition-all flex items-center justify-center gap-1.5 text-xs"
+                disabled={isBeneficiaryLoading}
+                className="w-full py-2.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white font-extrabold rounded-lg shadow-md transition-all flex items-center justify-center gap-1.5 text-xs"
               >
-                <UserIcon className="h-3.5 w-3.5" />
-                <span>الدخول فوراً كمستفيد والتنقل للموقع</span>
-                <ArrowRight className="h-3.5 w-3.5 rotate-180" />
+                {isBeneficiaryLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <UserIcon className="h-4 w-4" />
+                )}
+                <span>{isBeneficiaryLoading ? 'جاري بدء جلسة المستفيد...' : 'الدخول فوراً كمستفيد والتنقل للموقع'}</span>
+                {!isBeneficiaryLoading && <ArrowRight className="h-3.5 w-3.5 rotate-180" />}
               </Button>
             </div>
           </div>
