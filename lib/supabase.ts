@@ -107,10 +107,14 @@ CREATE TABLE IF NOT EXISTS public.users (
     work_entity TEXT,
     job_title TEXT,
     phone TEXT,
+    password TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     permissions JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now());
 
 -- 4. تفعيل سياسات الأمان (RLS) وحمايتها مع السماح للتطبيق (anon)
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
@@ -369,9 +373,7 @@ export async function fetchFeedbackFromSupabase(): Promise<Feedback[] | null> {
       name: item.name,
       phone: item.phone || '',
       message: item.message,
-      createdAt: {
-        toDate: () => new Date(item.created_at)
-      } as any
+      createdAt: item.created_at
     }));
   } catch (err) {
     console.warn("Supabase fetchFeedback error:", err);
@@ -447,6 +449,21 @@ export function normalizePhone(input: string | undefined | null): string | null 
   if (digits.startsWith('5') && digits.length === 9) return '+966' + digits;
   if (digits.startsWith('+966')) return digits;
   return digits;
+}
+
+/**
+ * تشفير كلمة المرور باستخدام Web Crypto API (SHA-256)
+ */
+export async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function isSha256Hash(str: string): boolean {
+  return /^[0-9a-f]{64}$/i.test(str);
 }
 
 function mapSupabaseRowToUser(item: any): User {
@@ -612,6 +629,12 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false
     };
 
+    // تشفير كلمة المرور في حال كانت كلمة جديدة غير مشفرة
+    let securePassword = user.password ? user.password.trim() : '';
+    if (securePassword && !isSha256Hash(securePassword)) {
+      securePassword = await hashPassword(securePassword);
+    }
+
     const payload = {
       id: canonicalId,
       civil_id: cleanCivilId,
@@ -623,7 +646,8 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       phone: normalizePhone(user.phone) || null,
       status: user.status || 'active',
       permissions: permissionsPayload,
-      ...(user.password ? { password: user.password } : {})
+      updated_at: new Date().toISOString(),
+      ...(securePassword ? { password: securePassword } : {})
     };
 
     // 1. الحفظ في جدول users مع التحقق من الخطأ

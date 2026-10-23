@@ -48,7 +48,7 @@ const FeedbackManagement: React.FC = () => {
             'الاسم': f.name,
             'رقم التواصل': f.phone || 'غير مدخل',
             'الملاحظة': f.message,
-            'التاريخ': f.createdAt?.toDate ? f.createdAt.toDate().toLocaleString('ar-SA') : 'غير متوفر'
+            'التاريخ': f.createdAt?.toDate ? f.createdAt.toDate().toLocaleString('ar-SA') : (f.createdAt ? new Date(f.createdAt).toLocaleString('ar-SA') : 'غير متوفر')
         }));
 
         const ws = XLSX.utils.json_to_sheet(exportData);
@@ -149,7 +149,7 @@ const FeedbackManagement: React.FC = () => {
                                             )}
                                             <div className="flex items-center gap-2 text-slate-400 text-[10px]">
                                                 <Calendar className="h-3 w-3" />
-                                                <span>{f.createdAt?.toDate ? f.createdAt.toDate().toLocaleString('ar-SA') : 'قيد المعالجة...'}</span>
+                                                <span>{f.createdAt?.toDate ? f.createdAt.toDate().toLocaleString('ar-SA') : (f.createdAt ? new Date(f.createdAt).toLocaleString('ar-SA') : 'غير متوفر')}</span>
                                             </div>
                                         </div>
                                     </td>

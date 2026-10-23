@@ -12,7 +12,8 @@ import {
 import {
   normalizeCivilId,
   upsertUserToSupabase,
-  subscribeToUsersChanges
+  subscribeToUsersChanges,
+  hashPassword
 } from '../../lib/supabase';
 import { MinistryLogo } from '../MinistryLogo';
 import { DeveloperContactModal } from './DeveloperContactModal';
@@ -103,30 +104,28 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
         normalizeCivilId(u.civilId) === idClean || (u.civilId && u.civilId === idClean)
       );
 
-      let loginOk = false;
-      let isDisabled = false;
-
-      if (matchedByCivilId) {
-        if (matchedByCivilId.status === 'disabled') {
-          isDisabled = true;
-        } else if (matchedByCivilId.password && matchedByCivilId.password === pwdClean) {
-          loginOk = true;
-        }
-      }
-
-      // Timing attack mitigation: ensure minimum 800ms response time
+      // تأخير زمني لمنع هجمات التوقيت
       const elapsed = Date.now() - start;
-      if (elapsed < 800) {
-        await new Promise(r => setTimeout(r, 800 - elapsed));
+      if (elapsed < 600) {
+        await new Promise(r => setTimeout(r, 600 - elapsed));
       }
 
-      if (isDisabled) {
+      if (!matchedByCivilId) {
+        setError('هذا السجل المدني غير مسجل في النظام.');
+        return;
+      }
+
+      if (matchedByCivilId.status === 'disabled') {
         setError('⚠️ الحساب معطل حالياً بواسطة مسؤول النظام. الرجاء التواصل مع الإدارة.');
         return;
       }
 
-      if (!loginOk || !matchedByCivilId) {
-        setError('بيانات الدخول غير صحيحة.');
+      // تشفير كلمة المرور المدخلة باستخدام SHA-256
+      const hashedInput = await hashPassword(pwdClean);
+
+      // مقارنة كلمة المرور المشفرة (مع دعم الكلمات غير المشفرة مسبقاً لضمان عدم قفل أي حساب)
+      if (hashedInput !== matchedByCivilId.password && pwdClean !== matchedByCivilId.password) {
+        setError('كلمة المرور غير صحيحة. يرجى إعادة المحاولة.');
         return;
       }
 
@@ -210,6 +209,7 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
     setIsSubmitting(true);
     try {
       const cleanId = normalizeCivilId(fetchedEmployee.civilId);
+      const hashedPassword = await hashPassword(newPassword);
       const users = await syncUsersWithCloud();
       const existingIndex = users.findIndex(u => normalizeCivilId(u.civilId) === cleanId);
 
@@ -220,7 +220,7 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
         finalUser = {
           ...existingUser,
           civilId: cleanId,
-          password: newPassword,
+          password: hashedPassword,
           name: fetchedEmployee.name || existingUser.name,
           workEntity: fetchedEmployee.workEntity || existingUser.workEntity,
           jobTitle: fetchedEmployee.jobTitle || existingUser.jobTitle,
@@ -234,7 +234,7 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
           id: `emp-${cleanId}`,
           civilId: cleanId,
           name: fetchedEmployee.name,
-          password: newPassword,
+          password: hashedPassword,
           role: 'user',
           userType: 'employee',
           workEntity: fetchedEmployee.workEntity,

@@ -11,8 +11,11 @@ CREATE TABLE IF NOT EXISTS public.users (
     password TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     permissions JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now());
 
 CREATE TABLE IF NOT EXISTS public.educational_files (
     id TEXT PRIMARY KEY,
