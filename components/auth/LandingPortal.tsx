@@ -29,6 +29,8 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isBeneficiaryLoading, setIsBeneficiaryLoading] = useState(false);
+  const [beneficiaryPassword, setBeneficiaryPassword] = useState('');
+  const [beneficiaryError, setBeneficiaryError] = useState('');
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
 
   // Login form state
@@ -53,10 +55,24 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
     };
   }, []);
 
-  // Beneficiary login handler
-  const handleBeneficiaryAccess = async () => {
-    setIsBeneficiaryLoading(true);
+  // Beneficiary login handler - Protected by password 'salim1392'
+  const handleBeneficiaryAccess = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setBeneficiaryError('');
     setError('');
+
+    const cleanPwd = beneficiaryPassword.trim();
+    if (!cleanPwd) {
+      setBeneficiaryError('يرجى إدخال رمز المرور للمتابعة.');
+      return;
+    }
+
+    if (cleanPwd !== 'salim1392') {
+      setBeneficiaryError('رمز المرور غير صحيح.');
+      return;
+    }
+
+    setIsBeneficiaryLoading(true);
     try {
       await new Promise(r => setTimeout(r, 250));
       const beneficiaryUser: User = {
@@ -75,7 +91,7 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
       };
       onLoginSuccess(beneficiaryUser);
     } catch {
-      setError('تعذر تسجيل الدخول كمستفيد. يرجى إعادة المحاولة.');
+      setBeneficiaryError('تعذر تسجيل الدخول كمستفيد. يرجى إعادة المحاولة.');
     } finally {
       setIsBeneficiaryLoading(false);
     }
@@ -270,9 +286,9 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
       {/* Official Top Banner */}
       <header className="relative z-10 w-full border-b border-slate-800/80 bg-slate-900/80 backdrop-blur-xl px-3 sm:px-6 py-1.5 sm:py-2 shrink-0">
         <div className="max-w-7xl mx-auto flex flex-row items-center justify-between gap-2">
-          <div className="flex items-center gap-2 sm:gap-3 text-right">
-            <MinistryLogo variant="badge" className="h-8 sm:h-10" />
-            <div>
+          <div className="flex items-center gap-4 sm:gap-6 text-right">
+            <MinistryLogo variant="badge" className="h-12 sm:h-14 md:h-16 ml-1.5 sm:ml-3" />
+            <div className="pr-1 sm:pr-2">
               <div className="text-[8px] sm:text-[9px] text-emerald-400 font-extrabold tracking-widest uppercase">المملكة العربية السعودية • وزارة التعليم</div>
               <h1 className="text-xs sm:text-sm md:text-base font-black text-white leading-tight">الإدارة العامة للتعليم بمنطقة المدينة المنورة</h1>
               <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">الشؤون التعليمية • وحدة القبول</p>
@@ -551,10 +567,6 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
                 <ul className="space-y-1 text-[10px] text-slate-300 font-medium">
                   <li className="flex items-center gap-1">
                     <CheckCircle2 className="h-3 w-3 text-teal-400 shrink-0" />
-                    <span>دخول فوري بضغطة زر واحدة بدون كلمة مرور.</span>
-                  </li>
-                  <li className="flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3 text-teal-400 shrink-0" />
                     <span>تصفية والبحث في كافة المدارس والحي الجغرافي.</span>
                   </li>
                   <li className="flex items-center gap-1">
@@ -569,9 +581,42 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
               </div>
             </div>
 
-            <div className="pt-2">
+            {/* Beneficiary Password Form */}
+            <form onSubmit={handleBeneficiaryAccess} className="space-y-2 pt-2">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-300 mb-1">
+                  رمز المرور للمستفيدين والجمهور العام
+                </label>
+                <div className="relative">
+                  <input
+                    type="password"
+                    value={beneficiaryPassword}
+                    onChange={e => {
+                      setBeneficiaryPassword(e.target.value);
+                      if (beneficiaryError) setBeneficiaryError('');
+                    }}
+                    placeholder="أدخل رمز المرور..."
+                    className="w-full pl-3 pr-8 py-2 bg-slate-950/90 border border-slate-700 focus:border-teal-500 text-white placeholder-slate-500 rounded-lg focus:ring-2 focus:ring-teal-500 focus:outline-none text-xs font-semibold"
+                    required
+                  />
+                  <Lock className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-teal-400" />
+                </div>
+
+                {/* رسالة الإشعار أسفل مربع إدخال الرمز */}
+                <p className="mt-1.5 text-[10px] sm:text-[11px] font-medium text-teal-300 bg-teal-950/50 border border-teal-500/30 rounded-md p-1.5 leading-snug">
+                  الخدمة ستكون نشطة ومتاحة لكم فور بدء فترات التسجيل
+                </p>
+
+                {beneficiaryError && (
+                  <p className="mt-1 text-[10px] font-bold text-red-400 flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    <span>{beneficiaryError}</span>
+                  </p>
+                )}
+              </div>
+
               <Button
-                onClick={() => { setSelectedGate('beneficiary'); handleBeneficiaryAccess(); }}
+                type="submit"
                 disabled={isBeneficiaryLoading}
                 className="w-full py-2.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white font-extrabold rounded-lg shadow-md transition-all flex items-center justify-center gap-1.5 text-xs"
               >
@@ -580,10 +625,10 @@ export function LandingPortal({ onLoginSuccess }: LandingPortalProps) {
                 ) : (
                   <UserIcon className="h-4 w-4" />
                 )}
-                <span>{isBeneficiaryLoading ? 'جاري بدء جلسة المستفيد...' : 'الدخول فوراً كمستفيد والتنقل للموقع'}</span>
+                <span>{isBeneficiaryLoading ? 'جاري التحقق وبدء الجلسة...' : 'الدخول كمستفيد والتنقل للموقع'}</span>
                 {!isBeneficiaryLoading && <ArrowRight className="h-3.5 w-3.5 rotate-180" />}
               </Button>
-            </div>
+            </form>
           </div>
 
         </div>

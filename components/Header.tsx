@@ -20,7 +20,7 @@ export function Header({ user, onLoginClick, onLogoutClick, onAdminPanelClick }:
     <header className="w-full px-3 py-2 sm:px-4 sm:py-3 bg-primary-dark shadow-lg z-30 shrink-0 border-b-4 border-primary-light">
       <div className="container mx-auto flex items-center justify-between gap-2 sm:gap-4">
         {/* Right Section: Logo & Mobile Hamburger Menu */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 ml-2 sm:ml-4">
           {/* Mobile Hamburger Toggle */}
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
