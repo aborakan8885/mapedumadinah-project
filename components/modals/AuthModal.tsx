@@ -69,6 +69,12 @@ export const MOCK_CIVIL_ID_DATABASE: Record<string, { name: string; workEntity: 
     jobTitle: 'مسؤول النظام الرئيسي',
     phone: '05xxxxxxxx'
   },
+  '1002155933': {
+    name: 'عبدالله الترجمي',
+    workEntity: 'مكتب المساعد للشؤون التعليمية',
+    jobTitle: 'موظف مكتب المساعد للشؤون التعليمية',
+    phone: '05xxxxxxxx'
+  },
   '1057893156': {
     name: 'ريان عبداللطيف بشناق',
     workEntity: 'مكتب التعليم',

@@ -25,6 +25,85 @@ const isRole = (v: string): v is 'admin' | 'user' => v === 'admin' || v === 'use
 const isStatus = (v: string): v is 'active' | 'disabled' => v === 'active' || v === 'disabled';
 const isUserType = (v: string): v is UserTypeMode => v === 'employee' || v === 'beneficiary';
 
+export const WORK_ENTITIES = [
+    'مكتب المساعد للشؤون التعليمية',
+    'مكتب المساعد',
+    'الشؤون التعليمية',
+    'الموارد البشرية',
+    'وحدة القبول والتوزيع',
+    'إدارة التخطيط المدرسي',
+    'مكتب التعليم',
+] as const;
+
+export function getDefaultJobTitleForEntity(entity: string): string {
+    if (!entity) return 'موظف';
+    const trimmed = entity.trim();
+    return `موظف ${trimmed}`;
+}
+
+export function getJobTitleOptionsForEntity(entity: string): string[] {
+    const defaultTitle = getDefaultJobTitleForEntity(entity);
+    const options: string[] = [defaultTitle];
+
+    switch (entity) {
+        case 'مكتب المساعد للشؤون التعليمية':
+            options.push(
+                'مدير مكتب المساعد للشؤون التعليمية',
+                'أخصائي مكتب المساعد للشؤون التعليمية',
+                'مشرف بمكتب المساعد للشؤون التعليمية',
+                'سكرتير مكتب المساعد للشؤون التعليمية'
+            );
+            break;
+        case 'مكتب المساعد':
+            options.push(
+                'مدير مكتب المساعد',
+                'أخصائي مكتب المساعد',
+                'مشرف بمكتب المساعد',
+                'سكرتير مكتب المساعد'
+            );
+            break;
+        case 'الشؤون التعليمية':
+            options.push(
+                'مشرف تربوي بالشؤون التعليمية',
+                'أخصائي شؤون تعليمية',
+                'رئيس قسم بالشؤون التعليمية'
+            );
+            break;
+        case 'الموارد البشرية':
+            options.push(
+                'أخصائي موارد بشرية',
+                'مشرف موارد بشرية',
+                'مدير الموارد البشرية'
+            );
+            break;
+        case 'وحدة القبول والتوزيع':
+            options.push(
+                'أخصائي قبول وتوزيع',
+                'رئيس وحدة القبول والتوزيع',
+                'مشرف قبول وتسجيل'
+            );
+            break;
+        case 'إدارة التخطيط المدرسي':
+            options.push(
+                'مشرف تخطيط ومباني',
+                'محلل نظم جغرافية (GIS)',
+                'مهندس تخطيط مدرسي'
+            );
+            break;
+        case 'مكتب التعليم':
+            options.push(
+                'مشرف تربوي بمكتب التعليم',
+                'مدير مكتب التعليم',
+                'منسق قبول بمكتب التعليم'
+            );
+            break;
+        default:
+            break;
+    }
+
+    return options;
+}
+
 export default function UserManagement() {
     const [users, setUsers] = useState<User[]>(() => getMockUsers());
     const [searchQuery, setSearchQuery] = useState('');
@@ -53,8 +132,9 @@ export default function UserManagement() {
     // Form state for adding/editing user
     const [formCivilId, setFormCivilId] = useState('');
     const [formName, setFormName] = useState('');
-    const [formWorkEntity, setFormWorkEntity] = useState('الشؤون التعليمية');
-    const [formJobTitle, setFormJobTitle] = useState('الشؤون التعليمية');
+    const [formWorkEntity, setFormWorkEntity] = useState<string>('مكتب المساعد للشؤون التعليمية');
+    const [formJobTitle, setFormJobTitle] = useState<string>('موظف مكتب المساعد للشؤون التعليمية');
+    const [isCustomJobTitle, setIsCustomJobTitle] = useState(false);
     const [formPhone, setFormPhone] = useState('');
     const [formPassword, setFormPassword] = useState('');
     const [formRole, setFormRole] = useState<'admin' | 'user'>('user');
@@ -64,6 +144,14 @@ export default function UserManagement() {
     const [permViewCoords, setPermViewCoords] = useState(true);
     const [permExportReports, setPermExportReports] = useState(true);
     const [permSurrounding, setPermSurrounding] = useState(true);
+
+    // ربط تلقائي للمسمى الوظيفي بجهة العمل عند تغييرها
+    const handleWorkEntityChange = (newEntity: string) => {
+        setFormWorkEntity(newEntity);
+        const linkedTitle = getDefaultJobTitleForEntity(newEntity);
+        setFormJobTitle(linkedTitle);
+        setIsCustomJobTitle(false);
+    };
 
     const refreshAndSyncUsers = useCallback(async (showFeedback = false) => {
         setIsSyncing(true);
@@ -194,8 +282,10 @@ export default function UserManagement() {
         setEditingUser(null);
         setFormCivilId('');
         setFormName('');
-        setFormWorkEntity('الشؤون التعليمية');
-        setFormJobTitle('الشؤون التعليمية');
+        const initialEntity = WORK_ENTITIES[0];
+        setFormWorkEntity(initialEntity);
+        setFormJobTitle(getDefaultJobTitleForEntity(initialEntity));
+        setIsCustomJobTitle(false);
         setFormPhone('');
         setFormPassword('');
         setFormRole('user');
@@ -210,8 +300,10 @@ export default function UserManagement() {
         setEditingUser(user);
         setFormCivilId(normalizeCivilId(user.civilId) || user.civilId || '');
         setFormName(user.name);
-        setFormWorkEntity(user.workEntity || 'الشؤون التعليمية');
-        setFormJobTitle(user.jobTitle || 'الشؤون التعليمية');
+        const entity = user.workEntity || WORK_ENTITIES[0];
+        setFormWorkEntity(entity);
+        setFormJobTitle(user.jobTitle || getDefaultJobTitleForEntity(entity));
+        setIsCustomJobTitle(false);
         setFormPhone(user.phone || '');
         setFormPassword(user.password || '');
         setFormRole(user.role);
@@ -245,9 +337,8 @@ export default function UserManagement() {
             const savedUser: User = {
                 id: targetExisting?.id || `emp-${cleanCivilId}`,
                 civilId: cleanCivilId,
-                name: cleanName,
-                workEntity: formWorkEntity || 'الشؤون التعليمية',
-                jobTitle: formJobTitle || 'الشؤون التعليمية',
+                workEntity: formWorkEntity || WORK_ENTITIES[0],
+                jobTitle: formJobTitle || getDefaultJobTitleForEntity(formWorkEntity || WORK_ENTITIES[0]),
                 phone: normalizePhone(formPhone) || formPhone.trim(),
                 password: formPassword.trim() ? formPassword.trim() : (targetExisting?.password || ''),
                 role: formRole,
@@ -568,29 +659,56 @@ export default function UserManagement() {
                                     <label className="block text-xs font-bold text-gray-700 mb-1">جهة العمل / الإدارة</label>
                                     <select
                                         value={formWorkEntity}
-                                        onChange={e => setFormWorkEntity(e.target.value)}
-                                        className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white"
+                                        onChange={e => handleWorkEntityChange(e.target.value)}
+                                        className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white text-gray-800 shadow-sm focus:ring-2 focus:ring-primary-medium"
                                     >
-                                        <option value="الشؤون التعليمية">الشؤون التعليمية</option>
-                                        <option value="الموارد البشرية">الموارد البشرية</option>
-                                        <option value="وحدة القبول والتوزيع">وحدة القبول والتوزيع</option>
-                                        <option value="إدارة التخطيط المدرسي">إدارة التخطيط المدرسي</option>
-                                        <option value="مكتب التعليم">مكتب التعليم</option>
+                                        {WORK_ENTITIES.map(entity => (
+                                            <option key={entity} value={entity}>{entity}</option>
+                                        ))}
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">المسمى الوظيفي</label>
-                                    <select
-                                        value={formJobTitle}
-                                        onChange={e => setFormJobTitle(e.target.value)}
-                                        className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white"
-                                    >
-                                        <option value="الشؤون التعليمية">الشؤون التعليمية</option>
-                                        <option value="الموارد البشرية">الموارد البشرية</option>
-                                        <option value="أخصائي قبول وتوزيع">أخصائي قبول وتوزيع</option>
-                                        <option value="مشرف تخطيط ومباني">مشرف تخطيط ومباني</option>
-                                        <option value="محلل نظم جغرافية">محلل نظم جغرافية</option>
-                                    </select>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-xs font-bold text-gray-700">المسمى الوظيفي</label>
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsCustomJobTitle(!isCustomJobTitle)}
+                                            className="text-[10px] text-primary-medium hover:underline font-bold"
+                                        >
+                                            {isCustomJobTitle ? 'اختيار من القائمة' : 'كتابة مسمى آخر'}
+                                        </button>
+                                    </div>
+                                    {isCustomJobTitle ? (
+                                        <input
+                                            type="text"
+                                            value={formJobTitle}
+                                            onChange={e => setFormJobTitle(e.target.value)}
+                                            placeholder="اكتب المسمى الوظيفي..."
+                                            className="w-full px-3 py-2 border rounded-xl text-xs font-bold text-gray-800 shadow-sm focus:ring-2 focus:ring-primary-medium"
+                                            required
+                                        />
+                                    ) : (
+                                        <select
+                                            value={formJobTitle}
+                                            onChange={e => {
+                                                if (e.target.value === '__custom__') {
+                                                    setIsCustomJobTitle(true);
+                                                } else {
+                                                    setFormJobTitle(e.target.value);
+                                                }
+                                            }}
+                                            className="w-full px-3 py-2 border rounded-xl text-xs font-bold bg-white text-gray-800 shadow-sm focus:ring-2 focus:ring-primary-medium"
+                                        >
+                                            {(() => {
+                                                const options = getJobTitleOptionsForEntity(formWorkEntity);
+                                                const list = options.includes(formJobTitle) ? options : [formJobTitle, ...options];
+                                                return list.map(title => (
+                                                    <option key={title} value={title}>{title}</option>
+                                                ));
+                                            })()}
+                                            <option value="__custom__">✏️ مسمى وظيفي آخر (كتابة يدوية)...</option>
+                                        </select>
+                                    )}
                                 </div>
                             </div>
 
