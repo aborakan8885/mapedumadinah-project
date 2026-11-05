@@ -346,6 +346,7 @@ export default function UserManagement() {
             const savedUser: User = {
                 id: targetExisting?.id || `emp-${cleanCivilId}`,
                 civilId: cleanCivilId,
+                name: cleanName,
                 workEntity: formWorkEntity || WORK_ENTITIES[0],
                 jobTitle: formJobTitle || getDefaultJobTitleForEntity(formWorkEntity || WORK_ENTITIES[0]),
                 phone: normalizePhone(formPhone) || formPhone.trim(),
