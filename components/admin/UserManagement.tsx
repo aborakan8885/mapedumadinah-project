@@ -26,6 +26,7 @@ const isStatus = (v: string): v is 'active' | 'disabled' => v === 'active' || v 
 const isUserType = (v: string): v is UserTypeMode => v === 'employee' || v === 'beneficiary';
 
 export const WORK_ENTITIES = [
+    'مكتب مدير التعليم',
     'مكتب المساعد للشؤون التعليمية',
     'مكتب المساعد',
     'الشؤون التعليمية',
@@ -46,6 +47,14 @@ export function getJobTitleOptionsForEntity(entity: string): string[] {
     const options: string[] = [defaultTitle];
 
     switch (entity) {
+        case 'مكتب مدير التعليم':
+            options.push(
+                'مدير مكتب مدير التعليم',
+                'أخصائي مكتب مدير التعليم',
+                'مشرف بمكتب مدير التعليم',
+                'سكرتير مكتب مدير التعليم'
+            );
+            break;
         case 'مكتب المساعد للشؤون التعليمية':
             options.push(
                 'مدير مكتب المساعد للشؤون التعليمية',
