@@ -622,11 +622,13 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
 
     const canonicalId = user.id || `emp-${cleanCivilId}`;
 
-    const permissionsPayload = {
+    const permissionsPayload: Record<string, any> = {
+      ...(user.permissions || {}),
       visibleLayers: user.permissions?.visibleLayers || ['schools', 'kmz'],
       canViewCoordinates: user.permissions?.canViewCoordinates !== false,
       canExportReports: user.permissions?.canExportReports !== false,
-      canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false
+      canUseSurroundingAnalysis: user.permissions?.canUseSurroundingAnalysis !== false,
+      updated_at: new Date().toISOString()
     };
 
     // تشفير كلمة المرور في حال كانت كلمة جديدة غير مشفرة
@@ -634,8 +636,11 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
     if (securePassword && !isSha256Hash(securePassword)) {
       securePassword = await hashPassword(securePassword);
     }
+    if (securePassword) {
+      permissionsPayload._password = securePassword;
+    }
 
-    const payload = {
+    const payload: Record<string, any> = {
       id: canonicalId,
       civil_id: cleanCivilId,
       name: (user.name || '').trim(),
@@ -645,15 +650,32 @@ export async function saveUserToCloud(user: User): Promise<{ success: boolean; e
       job_title: user.jobTitle || 'الشؤون التعليمية',
       phone: normalizePhone(user.phone) || null,
       status: user.status || 'active',
-      permissions: permissionsPayload,
-      updated_at: new Date().toISOString(),
-      ...(securePassword ? { password: securePassword } : {})
+      permissions: permissionsPayload
     };
 
     // 1. الحفظ في جدول users مع التحقق من الخطأ
-    const { error: usersError } = await supabase
+    let { error: usersError } = await supabase
       .from('users')
       .upsert(payload, { onConflict: 'id' });
+
+    // معالجة مرنة في حال وجود كاش أعمدة غير محدث في PostgREST
+    if (usersError && usersError.code === 'PGRST204') {
+      console.warn("Supabase schema cache warning (PGRST204), retrying with sanitized payload:", usersError.message);
+      const sanitized = {
+        id: canonicalId,
+        civil_id: cleanCivilId,
+        name: (user.name || '').trim(),
+        role: user.role || 'user',
+        user_type: user.userType || 'employee',
+        work_entity: user.workEntity || 'الشؤون التعليمية',
+        job_title: user.jobTitle || 'الشؤون التعليمية',
+        phone: normalizePhone(user.phone) || null,
+        status: user.status || 'active',
+        permissions: permissionsPayload
+      };
+      const retryRes = await supabase.from('users').upsert(sanitized, { onConflict: 'id' });
+      usersError = retryRes.error;
+    }
 
     if (usersError) {
       console.error("Supabase users upsert error:", usersError);
