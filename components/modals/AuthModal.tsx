@@ -26,7 +26,7 @@ export const INITIAL_DEFAULT_USERS: User[] = [
     id: 'admin-main',
     civilId: '1068575628',
     name: 'مدير النظام الرئيسي',
-    password: '',
+    password: '728914906a0e36fb6b9667b29b02b55948320ce180d5af624179c2096a61b28d',
     role: 'admin',
     userType: 'employee',
     workEntity: 'الإدارة العامة للتعليم • المدينة المنورة',
